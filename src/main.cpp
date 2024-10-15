@@ -15,6 +15,9 @@ void setMotorSpeed(int speedPin, int dirPin, int speed);
 
 int target = 0, targetDeg = 0;  // in encoder counts, in degrees
 
+
+
+
 void setup()
 {
   Serial.begin(115200);
