@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include "AS5600.h"
+#include <Ramp.h>
 
 constexpr int TABLE_SPEED_PIN = 6;
 constexpr int TABLE_DIR_PIN = 7;
@@ -16,7 +17,7 @@ void setMotorSpeed(int speedPin, int dirPin, int speed);
 int target = 0, targetDeg = 0;  // in encoder counts, in degrees
 
 
-
+rampInt positionRamp;
 
 void setup()
 {
@@ -64,8 +65,16 @@ void setup()
   Serial.print("\tdeg: ");
   Serial.println(as5600.getCumulativePosition() * AS5600_RAW_TO_DEGREES);
   delay(2000);
-  targetDeg = 10;
-  target = degreesToCount(targetDeg);    // set initial target of 10 degrees
+  // targetDeg = 10;
+  // target = degreesToCount(targetDeg);    // set initial target of 10 degrees
+
+  positionRamp.go(degreesToCount(180), 10000, LINEAR, FORTHANDBACK);
+  target = 0;
+
+
+  // start the table spinning just for fun
+  digitalWrite(TABLE_DIR_PIN, HIGH);
+  analogWrite(TABLE_SPEED_PIN, 80);
 }
 
 
@@ -75,29 +84,30 @@ void loop()
   static unsigned long targetResetTimer = 0;
   static bool targetResetTimerSet = false;
   static int dir = 1;
+  target = positionRamp.update();
   int currentPos = as5600.getCumulativePosition();
   int error = target - currentPos;
   // int mSpeed = (int)(1.0 * error);
   if (error > 20) {
-    setMotorSpeed(ARM_SPEED_PIN, ARM_DIR_PIN, -200);
+    setMotorSpeed(ARM_SPEED_PIN, ARM_DIR_PIN, -150);
   } else if (error < -20) {
-    setMotorSpeed(ARM_SPEED_PIN, ARM_DIR_PIN, 200);
+    setMotorSpeed(ARM_SPEED_PIN, ARM_DIR_PIN, 150);
   } else {
     setMotorSpeed(ARM_SPEED_PIN, ARM_DIR_PIN, 0);
-    if (!targetResetTimerSet) {
-      targetResetTimerSet = true;
-      targetResetTimer = millis();
-    }
-    if (millis() - targetResetTimer > 2000) {
-      targetDeg = targetDeg + (dir * 10);
-      if (targetDeg > 180 || targetDeg < 0) {
-        dir *= -1;
-        targetDeg = targetDeg + (2 * dir * 10);
-      }
-      target = degreesToCount(targetDeg);
-      targetResetTimerSet = false;
-      targetResetTimer = millis();
-    }
+    // if (!targetResetTimerSet) {
+    //   targetResetTimerSet = true;
+    //   targetResetTimer = millis();
+    // }
+    // if (millis() - targetResetTimer > 2000) {
+    //   targetDeg = targetDeg + (dir * 10);
+    //   if (targetDeg > 180 || targetDeg < 0) {
+    //     dir *= -1;
+    //     targetDeg = targetDeg + (2 * dir * 10);
+    //   }
+    //   target = degreesToCount(targetDeg);
+    //   targetResetTimerSet = false;
+    //   targetResetTimer = millis();
+    // }
   }
 
   if (millis() - lastPrint > 100) {
@@ -107,14 +117,14 @@ void loop()
     // Serial.print("deg: ");
     // Serial.println(as5600.readAngle() * AS5600_RAW_TO_DEGREES);
     
-    Serial.print("raw: ");
-    Serial.print(as5600.getCumulativePosition());
-    Serial.print("\tdeg: ");
-    Serial.print(as5600.getCumulativePosition() * AS5600_RAW_TO_DEGREES);
-    Serial.print("\ttargetDeg: ");
-    Serial.println(targetDeg);
-    Serial.print("\terror: ");
-    Serial.println(error);
+    // Serial.print("raw: ");
+    // Serial.print(as5600.getCumulativePosition());
+    // Serial.print("\tdeg: ");
+    // Serial.print(as5600.getCumulativePosition() * AS5600_RAW_TO_DEGREES);
+    // Serial.print("\ttargetDeg: ");
+    // Serial.println(targetDeg);
+    // Serial.print("\terror: ");
+    // Serial.println(error);
     
     // Serial.print("\t");
     // Serial.println(error);
