@@ -1,8 +1,9 @@
 #include <Arduino.h>
 #include "AS5600.h"
 #include <Ramp.h>
-#include <DFRobot_TCS3430.h>
 #include <AnalogEncoder.h>
+#include <SparkFun_OPT4048.h>
+#include <Wire.h>
 
 // proxy values for clockwise and ccw rotation of table
 #define CCW   HIGH
@@ -21,16 +22,14 @@ void setMotorSpeed(int speedPin, int dirPin, int speed);
 
 int target = 0, targetDeg = 0;  // in encoder counts, in degrees
 
-
 rampInt positionRamp;
-
-
-DFRobot_TCS3430 TCS3430;          // object for light sensor
-
 
 AnalogEncoder tableEncoder(A0);
 AnalogEncoder armEncoder(A1, true);
 
+SparkFun_OPT4048 colorSensor;
+
+sfe_color_t colors;
 
 void setup()
 {
@@ -43,13 +42,16 @@ void setup()
   pinMode(ARM_DIR_PIN, OUTPUT);
   pinMode(ARM_SPEED_PIN, OUTPUT);
 
-  if (!TCS3430.begin()) {
-    Serial.println("TCS3430 not connected");
+  if (!colorSensor.begin()) {
+    Serial.println("color sensor not initialized.");
   } else {
-    Serial.println("TCS3430 - READY");
+    Serial.println("color sensor READY");
   }
   delay(1000);
 
+  colorSensor.setBasicSetup();
+
+  // home the arm motor
   digitalWrite(ARM_DIR_PIN, HIGH);
   analogWrite(ARM_SPEED_PIN, 200);
   delay(1000);
@@ -78,7 +80,7 @@ void loop()
   target = positionRamp.update();
   int currentPos = armEncoder.read();
   int error = target - currentPos;
-  // int mSpeed = (int)(1.0 * error);
+  int mSpeed = (int)(1.0 * error);
   if (error > 5) {
     setMotorSpeed(ARM_SPEED_PIN, ARM_DIR_PIN, -ARM_MOTOR_MIN_SPEED);
   } else if (error < -5) {
@@ -88,17 +90,29 @@ void loop()
   }
 
   if (millis() - lastPrint > 100) {
-    // uint16_t XData = TCS3430.getXData();
-    // uint16_t YData = TCS3430.getYData();
-    // uint16_t ZData = TCS3430.getZData();
-    // uint16_t IR1Data = TCS3430.getIR1Data();
-    // uint16_t IR2Data = TCS3430.getIR2Data();
-    // String str = "X : " + String(XData) + "    Y : " + String(YData) + "    Z : " +  String(ZData) + "    IR1 : "+String(IR1Data) + "    IR2 : "+String(IR2Data);
-    // // String str = "X : " + String(XData);
-    // Serial.println(str);
+    colors = colorSensor.getAllADC();
+
+    // this grabs like a middle chunk of the ADC reading, so far is the most useful range. I think each channel would have to be scaled differently to be useful.
+    uint8_t red = (colors.red >> 8) & 0xFF;
+    uint8_t blue = (colors.blue >> 8) & 0xFF;
+    uint8_t green = (colors.green >> 8) & 0xFF;
+    uint8_t white = (colors.white >> 8) & 0xFF;
+
+    // uint8_t red = (uint8_t)(colors.red * 255 / 4294967295);
+    // uint8_t blue = (uint8_t)(colors.blue * 255 / 4294967295);
+    // uint8_t green = (uint8_t)(colors.green * 255 / 4294967295);
+    // uint8_t white = (uint8_t)(colors.white * 255 / 4294967295);
+
+    // uint32_t red = colors.red;
+    // uint32_t blue = colors.blue;
+    // uint32_t green = colors.green;
+    // uint32_t white = colors.white;
+
+    String str = "R: " + String(red) + "    G: " + String(green) + "    B: " + String(blue) + "    W: " + String(white);
+    Serial.print(str);
     int tPos = tableEncoder.read();
     int aPos = armEncoder.read();
-    String str = "Arm: " + String(aPos) + "    Table: " + String(tPos);
+    str = "    Arm: " + String(aPos) + "    Table: " + String(tPos);
     Serial.println(str);
     lastPrint = millis();
   }
