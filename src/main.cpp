@@ -1,9 +1,8 @@
 #include <Arduino.h>
-#include "AS5600.h"
 #include <Ramp.h>
-#include <DFRobot_TCS3430.h>
 #include <AnalogEncoder.h>
-
+#include <Adafruit_APDS9960.h>
+#include <SPI.h>
 // proxy values for clockwise and ccw rotation of table
 #define CCW   HIGH
 #define CW    LOW
@@ -25,17 +24,16 @@ int target = 0, targetDeg = 0;  // in encoder counts, in degrees
 rampInt positionRamp;
 
 
-DFRobot_TCS3430 TCS3430;          // object for light sensor
-
-
 AnalogEncoder tableEncoder(A0);
 AnalogEncoder armEncoder(A1, true);
+
+Adafruit_APDS9960 colorSensor;
 
 
 void setup()
 {
   Serial.begin(115200);
-
+  Serial.println("starting");
   Wire.begin();
 
   pinMode(TABLE_DIR_PIN, OUTPUT);
@@ -43,12 +41,12 @@ void setup()
   pinMode(ARM_DIR_PIN, OUTPUT);
   pinMode(ARM_SPEED_PIN, OUTPUT);
 
-  if (!TCS3430.begin()) {
-    Serial.println("TCS3430 not connected");
-  } else {
-    Serial.println("TCS3430 - READY");
+  if(!colorSensor.begin()){
+    Serial.println("failed to initialize device! Please check your wiring.");
   }
+  else Serial.println("Device initialized!");
   delay(1000);
+  colorSensor.enableColor(true);
 
   digitalWrite(ARM_DIR_PIN, HIGH);
   analogWrite(ARM_SPEED_PIN, 200);
@@ -72,39 +70,33 @@ void setup()
 }
 
 
-void loop()
-{
-  static unsigned long lastPrint = millis();
-  target = positionRamp.update();
-  int currentPos = armEncoder.read();
-  int error = target - currentPos;
-  // int mSpeed = (int)(1.0 * error);
-  if (error > 5) {
-    setMotorSpeed(ARM_SPEED_PIN, ARM_DIR_PIN, -ARM_MOTOR_MIN_SPEED);
-  } else if (error < -5) {
-    setMotorSpeed(ARM_SPEED_PIN, ARM_DIR_PIN, ARM_MOTOR_MIN_SPEED);
-  } else {
-    setMotorSpeed(ARM_SPEED_PIN, ARM_DIR_PIN, 0);
-  }
+void loop() {
+    static unsigned long lastPrint = millis();
+    static unsigned long lastColorUpdate = millis();
+    uint16_t r, g, b, c;
+    target = positionRamp.update();
+    int currentPos = armEncoder.read();
+    int error = target - currentPos;
+    int mSpeed = (int)(1.0 * error);
+    if (error > 5) {
+      setMotorSpeed(ARM_SPEED_PIN, ARM_DIR_PIN, -ARM_MOTOR_MIN_SPEED);
+    } else if (error < -5) {
+      setMotorSpeed(ARM_SPEED_PIN, ARM_DIR_PIN, ARM_MOTOR_MIN_SPEED);
+    } else {
+      setMotorSpeed(ARM_SPEED_PIN, ARM_DIR_PIN, 0);
 
-  if (millis() - lastPrint > 100) {
-    // uint16_t XData = TCS3430.getXData();
-    // uint16_t YData = TCS3430.getYData();
-    // uint16_t ZData = TCS3430.getZData();
-    // uint16_t IR1Data = TCS3430.getIR1Data();
-    // uint16_t IR2Data = TCS3430.getIR2Data();
-    // String str = "X : " + String(XData) + "    Y : " + String(YData) + "    Z : " +  String(ZData) + "    IR1 : "+String(IR1Data) + "    IR2 : "+String(IR2Data);
-    // // String str = "X : " + String(XData);
-    // Serial.println(str);
-    int tPos = tableEncoder.read();
-    int aPos = armEncoder.read();
-    String str = "Arm: " + String(aPos) + "    Table: " + String(tPos);
-    Serial.println(str);
-    lastPrint = millis();
-  }
+    if (millis() - lastPrint > 100) {
+      if (colorSensor.colorDataReady()) colorSensor.getColorData(&r, &g, &b, &c);
+      String str = "R: " + String(r) + "    G: " + String(g) + "    B: " + String(b) + "    C: " + String(c);
+      int tPos = tableEncoder.read();
+      int aPos = armEncoder.read();
+      str += "    Arm: " + String(aPos) + "    Table: " + String(tPos);
+      Serial.println(str);
+      lastPrint = millis();
+    }
 
+  }
 }
-
 
 void setMotorSpeed(int speedPin, int dirPin, int speed) {
   if (speed < 0) {
