@@ -1,22 +1,19 @@
 #include "AnalogEncoder.h"
 
-// Constructor to initialize pin and zeroCrossHysteresis
 AnalogEncoder::AnalogEncoder(uint8_t pin, bool zeroCrossHysteresis)
     : _pin(pin), _offset(0), _zeroCrossHysteresis(zeroCrossHysteresis), 
-      _hysteresisThreshold(1000) {}  // Default hysteresis threshold
+      _hysteresisThreshold(1000) {}
 
-// Initialize the analog pin (optional, for clarity)
 void AnalogEncoder::begin() {
     pinMode(_pin, INPUT);
+    _lastPosition = update(); // Initialize last position
 }
 
-// Set the current reading as the offset
 void AnalogEncoder::calibrate() {
     _offset = analogRead(_pin);
 }
 
-// Read the encoder value with optional zero-cross hysteresis handling
-int AnalogEncoder::read() {
+int AnalogEncoder::update() {
     int value = analogRead(_pin);
 
     // Apply the offset
@@ -26,11 +23,64 @@ int AnalogEncoder::read() {
     if (_zeroCrossHysteresis && adjustedValue > _hysteresisThreshold) {
         adjustedValue = 0;
     }
-
+    
+    _lastReadValue = adjustedValue;
     return adjustedValue;
 }
 
-// Set a new hysteresis threshold
 void AnalogEncoder::setHysteresisThreshold(int threshold) {
     _hysteresisThreshold = threshold;
+}
+
+// New position tracking functions
+int32_t AnalogEncoder::getCumulativePosition(bool updatePosition) {
+    if (updatePosition) {
+        int16_t currentValue = update();
+        
+        // Check for rotation wrap-around
+        // If the difference between current and last position is more than half the range,
+        // we assume we've wrapped around
+        if ((_lastPosition > 512) && (currentValue < (_lastPosition - 512))) {
+            // Wrapped from high to low - clockwise rotation
+            _position = _position + 1024 - _lastPosition + currentValue;
+        }
+        else if ((currentValue > 512) && (_lastPosition < (currentValue - 512))) {
+            // Wrapped from low to high - counter-clockwise rotation
+            _position = _position - 1024 - _lastPosition + currentValue;
+        }
+        else {
+            // No wrap-around, just add the difference
+            _position = _position - _lastPosition + currentValue;
+        }
+        
+        _lastPosition = currentValue;
+    }
+    
+    return _position;
+}
+
+int32_t AnalogEncoder::getRevolutions() {
+    // For 10-bit ADC (0-1023), one revolution is 1024 steps
+    int32_t revs = _position >> 10;  // Divide by 1024
+    if (revs < 0) revs++; // Correct negative values
+    return revs;
+}
+
+int32_t AnalogEncoder::resetPosition(int32_t position) {
+    int32_t oldPosition = _position;
+    _position = position;
+    return oldPosition;
+}
+
+int32_t AnalogEncoder::resetCumulativePosition(int32_t position) {
+    _lastPosition = update();
+    int32_t oldPosition = _position;
+    _position = position;
+    return oldPosition;
+}
+
+uint16_t AnalogEncoder::getAngle() {
+    // Extract just the current angle from the cumulative position
+    // by taking the least significant 10 bits
+    return abs(_position) & BITMASK;
 }

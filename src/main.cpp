@@ -24,26 +24,29 @@ AnalogEncoder armEncoder(ARM_ENC_PIN);
 
 
 DRV8835 tableMotor(TABLE_SPEED_PIN, TABLE_DIR_PIN, 85, true);
+DRV8835 armMotor(ARM_SPEED_PIN, ARM_DIR_PIN, 160, false);
 
+
+void homeArm();
 
 void setup()
 {
   Serial.begin(115200);
   Serial.println("starting");
-
-  tableMotor.setSpeed(255);
-  delay(8000);
-  tableMotor.setSpeed(0);
-
   armEncoder.begin();
+  homeArm();
+
   tableEncoder.begin();
   armEncoder.calibrate();
   tableEncoder.calibrate();
+  tableEncoder.resetCumulativePosition();
+  armEncoder.resetCumulativePosition();
 
   delay(2000);
 
 
-  tableMotor.setSpeed(1);
+  tableMotor.setSpeed(255);
+  armMotor.setSpeed(1);
 }
 
 
@@ -52,8 +55,38 @@ void loop() {
   static unsigned long lastColorUpdate = millis();
   uint16_t r, g, b, c;
 
+  tableEncoder.getCumulativePosition();
+
   if (millis() - lastPrint > 100) {
-    Serial.println(tableEncoder.read());
+    Serial.print(tableEncoder.update()); Serial.print("    ");
+    Serial.print(tableEncoder.getRevolutions()); Serial.print("    ");
+    Serial.println(tableEncoder.getAngle());
     lastPrint = millis();
+  }
+}
+
+
+
+void homeArm() {
+  armMotor.setSpeed(-255);
+  int16_t lastPosition = 0, currentPosition = 0;
+  bool homed = false;
+  uint32_t lastUpdateTime = millis();
+  int16_t hysteresisVal = 10;
+
+  while (!homed) {
+    armEncoder.getCumulativePosition();
+    currentPosition = armEncoder.getAngle();
+    if (millis() - lastUpdateTime > 100) {
+      Serial.println("homing");
+      if ((lastPosition > currentPosition - hysteresisVal) && (lastPosition < currentPosition + hysteresisVal)) {
+        homed = true;
+        armMotor.setSpeed(0);
+        Serial.println("complete");
+        return;
+      }
+      lastPosition = currentPosition;
+      lastUpdateTime = millis();
+    }
   }
 }
