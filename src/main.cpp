@@ -18,6 +18,8 @@ constexpr uint8_t ARM_DIR_PIN = 4;
 constexpr uint8_t ARM_ENC_PIN = A6;
 constexpr uint8_t TABLE_ENC_PIN = A7;
 
+constexpr uint8_t LED_PIN = A3;
+
 
 AnalogEncoder tableEncoder(TABLE_ENC_PIN);
 AnalogEncoder armEncoder(ARM_ENC_PIN);
@@ -44,6 +46,8 @@ void setup()
   armEncoder.begin();
   homeArm();
 
+  digitalWrite(LED_PIN, HIGH);
+  
   tableEncoder.begin();
   armEncoder.calibrate();
   tableEncoder.calibrate();
@@ -79,7 +83,7 @@ void loop() {
   //                 (armDir < 0 && cycloidalAngle <= 5);
 
   bool reverseArm = (armDir > 0 && linearPosition > 99) || 
-                  (armDir < 0 && linearPosition < 2);
+                  (armDir < 0 && linearPosition < 25);
   
   if (reverseArm) {
     armMotor.setSpeed(0);
@@ -88,7 +92,7 @@ void loop() {
     Serial.print(" LinearPosition: "); Serial.println(linearPosition);
     // Serial.print(" Revolutions="); Serial.print(armRevolutions);
     // Serial.print(" RawAngle="); Serial.println(armAngle);
-    delay(5000);
+    delay(1000);
     armDir *= -1;
     armMotor.setSpeed(armDir * armSpeed);
   }
