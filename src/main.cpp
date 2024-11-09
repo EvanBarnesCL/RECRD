@@ -32,6 +32,7 @@ int16_t armAngle, armRevolutions;
 
 
 void homeArm();
+int16_t getGearboxAngle();
 
 void setup()
 {
@@ -56,24 +57,38 @@ void setup()
 
 void loop() {
   static unsigned long lastPrint = millis();
-  static unsigned long lastColorUpdate = millis();
-  uint16_t r, g, b, c;
-
-  armEncoder.getCumulativePosition();
+  int32_t armCompletePosition = armEncoder.getCumulativePosition();
   armAngle = armEncoder.getAngle();
   armRevolutions = armEncoder.getRevolutions();
+  int16_t cycloidalAngle = getGearboxAngle();
 
-  bool reverseArm = (armDir > 0 && armRevolutions == 15) || (armDir < 0 && (armRevolutions == 0 && armAngle < 10));
+  // Add debug prints to see raw values
+  if (millis() - lastPrint > 100) {
+    Serial.print("Complete Position: "); Serial.print(armCompletePosition);
+    Serial.print(" CycloidalAngle: "); Serial.print(cycloidalAngle);
+    Serial.print(" Revs: "); Serial.print(armRevolutions);
+    Serial.print(" Angle: "); Serial.println(armAngle);
+  }
+
+  bool reverseArm = (armDir > 0 && cycloidalAngle >= 1020) || 
+                  (armDir < 0 && cycloidalAngle <= 5);
+  
   if (reverseArm) {
     armMotor.setSpeed(0);
-    delay(2000);
+    Serial.print("******* Reversing: Direction="); Serial.print(armDir);
+    Serial.print(" CycloidalAngle="); Serial.print(cycloidalAngle);
+    Serial.print(" Revolutions="); Serial.print(armRevolutions);
+    Serial.print(" RawAngle="); Serial.println(armAngle);
+    delay(5000);
     armDir *= -1;
     armMotor.setSpeed(armDir * armSpeed);
   }
 
   if (millis() - lastPrint > 100) {
-    Serial.print(armEncoder.getRevolutions()); Serial.print("    ");
-    Serial.println(armEncoder.getAngle());
+    Serial.print("Dir:"); Serial.print(armDir);
+    Serial.print(" CycloidalAngle:"); Serial.print(cycloidalAngle);
+    Serial.print(" Revs:"); Serial.print(armRevolutions);
+    Serial.print(" Angle:"); Serial.println(armAngle);
     lastPrint = millis();
   }
 }
@@ -111,4 +126,16 @@ void homeArm() {
             lastUpdateTime = millis();
         }
     }
+}
+
+
+int16_t getGearboxAngle() {  // Changed return type to int16_t
+    // Get cumulative position from encoder
+    int32_t motorPosition = armEncoder.getCumulativePosition();
+    
+    // Get position within one full output rotation, preserving sign
+    motorPosition = (motorPosition % (30 * 1024));
+    
+    // Scale to -1024 to +1024 range (for ±180 degrees)
+    return (int16_t)((motorPosition * 2048L) / (30 * 1024));
 }
