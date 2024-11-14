@@ -145,18 +145,24 @@ void loop() {
   static uint16_t lastColorUpdateTime = 0;
   uint16_t currentColorUpdateTime = millis();
   bool newColorData = false;
+  uint16_t updateStartTime, updateEndTime, liveTime;
 
-  // if (currentColorUpdateTime - lastColorUpdateTime > 50) {
-  //   newColorData = updateColorReadings(&colorData);
-  //   lastColorUpdateTime = currentColorUpdateTime;
-  // }
-
-  newColorData = updateColorReadings(&colorData);
-
+  // update colors as needed
+  if (currentColorUpdateTime - lastColorUpdateTime > 50) {
+    updateStartTime = micros();
+    newColorData = updateColorReadings(&colorData);
+    updateEndTime = micros();
+    lastColorUpdateTime = currentColorUpdateTime;
+  }
+  // if there is new color data, print it to the monitor
   if (newColorData) {
+    liveTime = updateEndTime - updateStartTime; 
+    Serial.print(liveTime);
+    Serial.print(" ");
     printColorData();
   }
-
+  
+  // rotate to updating the next color channel - only one gets updated each loop
   currentColorChannel = static_cast<ColorChannels>((static_cast<int>(currentColorChannel) + 1) % 5);
 
   static unsigned long lastPrint = millis();
