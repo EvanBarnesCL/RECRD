@@ -45,14 +45,16 @@ void setup()
   Serial.println("starting");
   armEncoder.begin();
   homeArm();
+  
+  armEncoder.calibrate();
+  armEncoder.resetCumulativePosition();
+
 
   digitalWrite(LED_PIN, HIGH);
   
   tableEncoder.begin();
-  armEncoder.calibrate();
   tableEncoder.calibrate();
   tableEncoder.resetCumulativePosition();
-  armEncoder.resetCumulativePosition();
 
   delay(2000);
 
@@ -82,7 +84,7 @@ void loop() {
   // bool reverseArm = (armDir > 0 && cycloidalAngle >= 1020) || 
   //                 (armDir < 0 && cycloidalAngle <= 5);
 
-  bool reverseArm = (armDir > 0 && linearPosition > 99) || 
+  bool reverseArm = (armDir > 0 && linearPosition > 100 ) || 
                   (armDir < 0 && linearPosition < 25);
   
   if (reverseArm) {
@@ -133,6 +135,13 @@ void homeArm() {
                 (lastPosition < currentPosition + hysteresisVal)) {
                 homed = true;
                 armMotor.setSpeed(0);
+                armEncoder.calibrate();
+                armEncoder.resetCumulativePosition();
+                // move back off the homing stop to true zero.
+                armMotor.setSpeed(100);
+                while (encoderToDistance(getGearboxAngle()) < 3) {
+                }
+                armMotor.setSpeed(0);
                 Serial.println("complete");
                 return;
             }
@@ -145,7 +154,7 @@ void homeArm() {
 
 int16_t getGearboxAngle() {  // Changed return type to int16_t
     // Get cumulative position from encoder
-    int32_t motorPosition = armEncoder.getCumulativePosition();
+    int32_t motorPosition = armEncoder.getCumulativePosition(); 
     
     // Get position within one full output rotation, preserving sign
     motorPosition = (motorPosition % (30 * 1024));
