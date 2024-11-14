@@ -18,6 +18,8 @@ constexpr uint8_t ARM_DIR_PIN = 4;
 constexpr uint8_t ARM_ENC_PIN = A6;
 constexpr uint8_t TABLE_ENC_PIN = A7;
 
+constexpr uint8_t LED_PIN = A3;
+
 
 AnalogEncoder tableEncoder(TABLE_ENC_PIN);
 AnalogEncoder armEncoder(ARM_ENC_PIN);
@@ -33,6 +35,9 @@ int16_t armAngle, armRevolutions;
 
 void homeArm();
 int16_t getGearboxAngle();
+inline int16_t encoderToDistance(int16_t position);
+inline int16_t distanceToEncoder(int16_t distance);
+
 
 void setup()
 {
@@ -41,6 +46,8 @@ void setup()
   armEncoder.begin();
   homeArm();
 
+  digitalWrite(LED_PIN, HIGH);
+  
   tableEncoder.begin();
   armEncoder.calibrate();
   tableEncoder.calibrate();
@@ -61,34 +68,41 @@ void loop() {
   armAngle = armEncoder.getAngle();
   armRevolutions = armEncoder.getRevolutions();
   int16_t cycloidalAngle = getGearboxAngle();
+  int16_t linearPosition = encoderToDistance(cycloidalAngle);
 
   // Add debug prints to see raw values
-  if (millis() - lastPrint > 100) {
-    Serial.print("Complete Position: "); Serial.print(armCompletePosition);
-    Serial.print(" CycloidalAngle: "); Serial.print(cycloidalAngle);
-    Serial.print(" Revs: "); Serial.print(armRevolutions);
-    Serial.print(" Angle: "); Serial.println(armAngle);
-  }
+  // if (millis() - lastPrint > 100) {
+  //   Serial.print("Complete Position: "); Serial.print(armCompletePosition);
+  //   Serial.print(" CycloidalAngle: "); Serial.print(cycloidalAngle);
+  //   Serial.print(" LinearPosition: "); Serial.println(linearPosition);
+  //   // Serial.print(" Revs: "); Serial.print(armRevolutions);
+  //   // Serial.print(" Angle: "); Serial.println(armAngle);
+  // }
 
-  bool reverseArm = (armDir > 0 && cycloidalAngle >= 1020) || 
-                  (armDir < 0 && cycloidalAngle <= 5);
+  // bool reverseArm = (armDir > 0 && cycloidalAngle >= 1020) || 
+  //                 (armDir < 0 && cycloidalAngle <= 5);
+
+  bool reverseArm = (armDir > 0 && linearPosition > 99) || 
+                  (armDir < 0 && linearPosition < 25);
   
   if (reverseArm) {
     armMotor.setSpeed(0);
     Serial.print("******* Reversing: Direction="); Serial.print(armDir);
     Serial.print(" CycloidalAngle="); Serial.print(cycloidalAngle);
-    Serial.print(" Revolutions="); Serial.print(armRevolutions);
-    Serial.print(" RawAngle="); Serial.println(armAngle);
-    delay(5000);
+    Serial.print(" LinearPosition: "); Serial.println(linearPosition);
+    // Serial.print(" Revolutions="); Serial.print(armRevolutions);
+    // Serial.print(" RawAngle="); Serial.println(armAngle);
+    delay(1000);
     armDir *= -1;
     armMotor.setSpeed(armDir * armSpeed);
   }
 
   if (millis() - lastPrint > 100) {
-    Serial.print("Dir:"); Serial.print(armDir);
+    // Serial.print("Dir:"); Serial.print(armDir);
     Serial.print(" CycloidalAngle:"); Serial.print(cycloidalAngle);
-    Serial.print(" Revs:"); Serial.print(armRevolutions);
-    Serial.print(" Angle:"); Serial.println(armAngle);
+    Serial.print(" LinearPosition: "); Serial.println(linearPosition);
+    // Serial.print(" Revs:"); Serial.print(armRevolutions);
+    // Serial.print(" Angle:"); Serial.println(armAngle);
     lastPrint = millis();
   }
 }
@@ -138,4 +152,20 @@ int16_t getGearboxAngle() {  // Changed return type to int16_t
     
     // Scale to -1024 to +1024 range (for ±180 degrees)
     return (int16_t)((motorPosition * 2048L) / (30 * 1024));
+}
+
+
+
+
+
+// Convert arm encoder position (0-1024) to radial distance (0-100mm) (outer edge = 0, center of plate = 100mm)
+inline int16_t encoderToDistance(int16_t position) {
+    if (position < 0 || position > 1024) return 0;
+    return ((int32_t)position * 26) >> 8;
+}
+
+// Convert arm radial distance (0-100mm) to encoder position (0-1024)
+inline int16_t distanceToEncoder(int16_t distance) {
+    if (distance < 0 || distance > 100) return 0;
+    return ((int32_t)distance * 10);
 }
