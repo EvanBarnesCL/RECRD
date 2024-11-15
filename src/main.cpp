@@ -5,6 +5,12 @@
 #include <VEML3328.h>
 #include <Wire.h>
 
+#define MOZZI_CONTROL_RATE 128
+#include <Mozzi.h>
+#include <Oscil.h>
+#include <tables/sin2048_int8.h>
+#include <IntMap.h>
+
 // **********************************************************************************
 // Arm and Table stuff
 // **********************************************************************************
@@ -47,7 +53,6 @@ inline int16_t distanceToEncoder(int16_t distance);
 // Color sensor
 // **********************************************************************************
 
-
 VEML3328 RGBCIR;
 
 enum class ColorChannels {
@@ -76,6 +81,29 @@ void printColorData();
 
 
 // **********************************************************************************
+// Potentiometers
+// **********************************************************************************
+
+constexpr uint8_t VOLUME_POT_PIN = A0;
+constexpr uint8_t MIDDLE_POT_PIN = A1;
+constexpr uint8_t BACK_POT_PIN = A2;
+
+// **********************************************************************************
+// Mozzi stuff
+// **********************************************************************************
+
+Oscil <2048, MOZZI_AUDIO_RATE> aSin(SIN2048_DATA);
+Oscil <2048, MOZZI_CONTROL_RATE> kVib(SIN2048_DATA);
+float centre_freq = 440.0;
+float depth = 5.0;
+
+// global gain controls
+constexpr uint8_t MAX_GLOBAL_GAIN = 64;   // maximum global gain value
+uint8_t globalGain = 12;           // global gain value for changing total volume output. non-linear changes in volume
+IntMap k_GlobalGainMap(0, 255, 0, MAX_GLOBAL_GAIN);     // maps potentiometer value to be within 0-MAX_GLOBAL_GAIN so you don't blow your ears out
+
+
+// **********************************************************************************
 // Setup
 // **********************************************************************************
 
@@ -83,6 +111,7 @@ void printColorData();
 
 void setup()
 {
+  /*
   Serial.begin(115200);
   Serial.println("starting");
   armEncoder.begin();
@@ -130,7 +159,41 @@ void setup()
   // start moving the table and arm
   tableMotor.setSpeed(1);
   // armMotor.setSpeed(armSpeed);
+
+  */
+
+
+  // start Mozzi
+  kVib.setFreq(221.0f);
+  startMozzi(MOZZI_CONTROL_RATE);
 }
+
+
+// **********************************************************************************
+// updateControl for Mozzi
+// **********************************************************************************
+
+void updateControl() {
+  float vibrato = depth * kVib.next();
+  vibrato = depth * .5 * kVib.next();
+  // vibrato = depth * .33 * kVib.next();
+  aSin.setFreq(centre_freq+vibrato);
+  globalGain = k_GlobalGainMap(mozziAnalogRead<8>(VOLUME_POT_PIN));
+}
+
+
+
+
+
+
+// **********************************************************************************
+// updateAudio for Mozzi
+// **********************************************************************************
+
+AudioOutput_t updateAudio() {
+  return MonoOutput::from8Bit((aSin.next() * globalGain)>>8);             // 8 bit sine osc * 8 bit globalGain makes 16 bits total (2^8 * 2^8 = 2^(8+8) = 2^16)
+}
+
 
 
 
@@ -138,10 +201,11 @@ void setup()
 // Loop
 // **********************************************************************************
 
-
-
-
 void loop() {
+  // synthesize new audio for Mozzi
+  audioHook();
+
+  /*
   static uint16_t lastColorUpdateTime = 0;
   uint16_t currentColorUpdateTime = millis();
   bool newColorData = false;
@@ -185,6 +249,7 @@ void loop() {
   if (millis() - lastPrint > 100) {
     lastPrint = millis();
   }
+  */
 }
 
 
