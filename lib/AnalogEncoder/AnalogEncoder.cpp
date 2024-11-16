@@ -10,11 +10,11 @@ void AnalogEncoder::begin() {
 }
 
 void AnalogEncoder::calibrate() {
-    _offset = analogRead(_pin);
+    _offset = readAnalog();
 }
 
 int AnalogEncoder::update() {
-    int value = analogRead(_pin);
+    int value = readAnalog();
 
     // Apply the offset
     int adjustedValue = (value - _offset) & BITMASK;
@@ -38,8 +38,6 @@ int32_t AnalogEncoder::getCumulativePosition(bool updatePosition) {
         int16_t currentValue = update();
         
         // Check for rotation wrap-around
-        // If the difference between current and last position is more than half the range,
-        // we assume we've wrapped around
         if ((_lastPosition > 512) && (currentValue < (_lastPosition - 512))) {
             // Wrapped from high to low - clockwise rotation
             _position = _position + 1024 - _lastPosition + currentValue;
@@ -83,4 +81,8 @@ uint16_t AnalogEncoder::getAngle() {
     // Extract just the current angle from the cumulative position
     // by taking the least significant 10 bits
     return abs(_position) & BITMASK;
+}
+
+uint16_t AnalogEncoder::readAnalog() {
+    return analogRead(_pin);
 }

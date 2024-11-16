@@ -32,6 +32,9 @@ private:
     int16_t _lastReadValue = 0;// Last read value
 
     static const int BITMASK = 0x3FF;  // 10-bit bitmask (1023 in decimal)
+
+    // helper function to make switching between analogRead and mozziAnalogRead simpler
+    uint16_t readAnalog();
 };
 
 #endif  // ANALOGENCODER_H

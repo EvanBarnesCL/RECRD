@@ -1,15 +1,17 @@
 #include <Arduino.h>
-#include <AnalogEncoder.h>
 #include <digitalWriteFast.h>
 #include <Crunchlabs_DRV8835.h>
 #include <VEML3328.h>
 #include <Wire.h>
+#include <PWMFreak.h>
 
 #define MOZZI_CONTROL_RATE 128
 #include <Mozzi.h>
 #include <Oscil.h>
 #include <tables/sin2048_int8.h>
 #include <IntMap.h>
+#include <EventDelay.h>
+#include <AnalogEncoder.h>
 
 // **********************************************************************************
 // Arm and Table stuff
@@ -48,6 +50,8 @@ int16_t getGearboxAngle();
 inline int16_t encoderToDistance(int16_t position);
 inline int16_t distanceToEncoder(int16_t distance);
 
+EventDelay k_tableSpeedDelay;
+
 
 // **********************************************************************************
 // Color sensor
@@ -78,6 +82,9 @@ bool updateChannels[5] = {false, false, false, false, false}; // Flags to contro
 
 bool updateColorReadings(ColorValues *colorReadings);
 void printColorData();
+
+// delay timer for updating color data
+EventDelay k_colorUpdateDelay;
 
 
 // **********************************************************************************
@@ -111,9 +118,10 @@ IntMap k_GlobalGainMap(0, 255, 0, MAX_GLOBAL_GAIN);     // maps potentiometer va
 
 void setup()
 {
-  /*
   Serial.begin(115200);
   Serial.println("starting");
+
+
   armEncoder.begin();
   homeArm();
   armEncoder.calibrate();
@@ -121,6 +129,13 @@ void setup()
   tableEncoder.begin();
   tableEncoder.calibrate();
   tableEncoder.resetCumulativePosition();
+
+
+  #ifdef USE_FAST_PWM
+  // use fast PWM to remove audible noise from driving the motors
+  setPwmFrequency(5, 1);
+  #endif
+
 
   // set up the color sensor over i2c
   Wire.begin(); 
@@ -158,14 +173,16 @@ void setup()
 
   // start moving the table and arm
   tableMotor.setSpeed(1);
-  // armMotor.setSpeed(armSpeed);
+  armMotor.setSpeed(armSpeed);
 
-  */
 
 
   // start Mozzi
   kVib.setFreq(221.0f);
   startMozzi(MOZZI_CONTROL_RATE);
+
+  k_colorUpdateDelay.set(50);
+  k_tableSpeedDelay.set(1000);
 }
 
 
@@ -174,6 +191,43 @@ void setup()
 // **********************************************************************************
 
 void updateControl() {
+  bool newColorData = false;
+
+  // update colors as needed
+  if (k_colorUpdateDelay.ready()) {
+    newColorData = updateColorReadings(&colorData);
+    k_colorUpdateDelay.start();
+  }
+  // if there is new color data, print it to the monitor
+  if (newColorData) {
+    printColorData();
+  }
+  
+  // rotate to updating the next color channel - only one gets updated each loop
+  currentColorChannel = static_cast<ColorChannels>((static_cast<int>(currentColorChannel) + 1) % 5);
+
+  // int32_t armCompletePosition = armEncoder.getCumulativePosition();
+  armAngle = armEncoder.getAngle();
+  armRevolutions = armEncoder.getRevolutions();
+  int16_t cycloidalAngle = getGearboxAngle();
+  int16_t linearPosition = encoderToDistance(cycloidalAngle);
+
+  bool reverseArm = (armDir > 0 && linearPosition > 100 ) || 
+                  (armDir < 0 && linearPosition < 25);
+  
+  if (reverseArm) {
+    armMotor.setSpeed(0);
+    // delay(1000);
+    armDir *= -1;
+    armMotor.setSpeed(armDir * armSpeed);
+  }
+
+  if (k_tableSpeedDelay.ready()) {
+    tableMotor.setSpeed(tableMotor.getSpeedCommand() + 16);
+    k_tableSpeedDelay.start();
+  }
+
+
   float vibrato = depth * kVib.next();
   vibrato = depth * .5 * kVib.next();
   // vibrato = depth * .33 * kVib.next();
@@ -205,51 +259,9 @@ void loop() {
   // synthesize new audio for Mozzi
   audioHook();
 
-  /*
-  static uint16_t lastColorUpdateTime = 0;
-  uint16_t currentColorUpdateTime = millis();
-  bool newColorData = false;
-  uint16_t updateStartTime, updateEndTime, liveTime;
-
-  // update colors as needed
-  if (currentColorUpdateTime - lastColorUpdateTime > 50) {
-    updateStartTime = micros();
-    newColorData = updateColorReadings(&colorData);
-    updateEndTime = micros();
-    lastColorUpdateTime = currentColorUpdateTime;
-  }
-  // if there is new color data, print it to the monitor
-  if (newColorData) {
-    liveTime = updateEndTime - updateStartTime; 
-    Serial.print(liveTime);
-    Serial.print(" ");
-    printColorData();
-  }
   
-  // rotate to updating the next color channel - only one gets updated each loop
-  currentColorChannel = static_cast<ColorChannels>((static_cast<int>(currentColorChannel) + 1) % 5);
-
-  static unsigned long lastPrint = millis();
-  // int32_t armCompletePosition = armEncoder.getCumulativePosition();
-  armAngle = armEncoder.getAngle();
-  armRevolutions = armEncoder.getRevolutions();
-  int16_t cycloidalAngle = getGearboxAngle();
-  int16_t linearPosition = encoderToDistance(cycloidalAngle);
-
-  // bool reverseArm = (armDir > 0 && linearPosition > 100 ) || 
-  //                 (armDir < 0 && linearPosition < 25);
   
-  // if (reverseArm) {
-  //   armMotor.setSpeed(0);
-  //   delay(1000);
-  //   armDir *= -1;
-  //   armMotor.setSpeed(armDir * armSpeed);
-  // }
-
-  if (millis() - lastPrint > 100) {
-    lastPrint = millis();
-  }
-  */
+  
 }
 
 
