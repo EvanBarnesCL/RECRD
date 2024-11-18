@@ -1,8 +1,11 @@
 #include "AnalogEncoder.h"
+// #include "AnalogEncoderConfig.h"
 
 AnalogEncoder::AnalogEncoder(uint8_t pin, bool zeroCrossHysteresis)
     : _pin(pin), _offset(0), _zeroCrossHysteresis(zeroCrossHysteresis), 
-      _hysteresisThreshold(1000) {}
+      _hysteresisThreshold(1000) {
+      _readFunction = &analogRead; // Default to using analogRead
+}
 
 void AnalogEncoder::begin() {
     pinMode(_pin, INPUT);
@@ -84,5 +87,10 @@ uint16_t AnalogEncoder::getAngle() {
 }
 
 uint16_t AnalogEncoder::readAnalog() {
-    return analogRead(_pin);
+    return _readFunction(_pin);
+}
+
+// New method to set the function pointer for analog reading
+void AnalogEncoder::setReadFunction(int (*readFunction)(uint8_t)) {
+    _readFunction = readFunction;
 }

@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 
+
 class AnalogEncoder {
 public:
     // Constructor with pin and optional zeroCrossHysteresis parameter
@@ -19,6 +20,7 @@ public:
     int32_t resetPosition(int32_t position = 0);
     int32_t resetCumulativePosition(int32_t position = 0);
     uint16_t getAngle();     // Get current angle (0-1023)
+    void setReadFunction(int (*readFunction)(uint8_t));
 
 private:
     uint8_t _pin;             // Pin used for analogRead
@@ -35,6 +37,7 @@ private:
 
     // helper function to make switching between analogRead and mozziAnalogRead simpler
     uint16_t readAnalog();
+    int (*_readFunction)(uint8_t);     
 };
 
 #endif  // ANALOGENCODER_H
