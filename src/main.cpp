@@ -313,11 +313,16 @@ void updateControl() {
   static bool reversed = false;
   static bool initializeControl = true;
 
+  #pragma region controlInitializationRoutine
   // this will run for the first iteration to prime the mozziAnalogRead buffers.
   // this is necessary because of the way mozziAnalogRead asynchronously handles the ADC.
   // This has to be done at the start of updateControl() rather than during setup() because
   // mozziAnalogRead relies on interrupts generated during updateControl to actually start
-  // and gather analog readings. Fortunately we only need to do one read to prime the buffer.
+  // and gather analog readings. 
+  // This block also moves the color sensor to the starting position over the edge of the
+  // table and primes the buffer for the 5 color sensor channels as well. This way we can
+  // start the audio generation with clean sensor values, instead of values that start
+  // at 0 and drastically jump to the actual value. 
   if (initializeControl) {
     tableEncoder.getCumulativePosition();
     armEncoder.getCumulativePosition();
@@ -325,16 +330,27 @@ void updateControl() {
     mozziAnalogRead<10>(MIDDLE_POT_PIN);
     mozziAnalogRead<10>(BACK_POT_PIN);
     armMotor.setSpeed(100);
+    // bring the color sensor over the edge of the table
     if (encoderToDistance(getGearboxAngle()) > 30) {
       armMotor.setSpeed(0);
       initializeControl = false;
-      tableMotor.setSpeed(100);
       // turn on the LED to illuminate the scene for the color sensor
       digitalWrite(LED_PIN, HIGH);
+      // now prime buffer for the values for all 5 color sensor channels
+      for (int i = 0; i < 10; ) {
+        if (k_colorUpdateDelay.ready()) {
+          newColorData = updateColorReadings(&colorData);
+          k_colorUpdateDelay.start();
+          // rotate to updating the next color channel - only one gets updated each loop
+          currentColorChannel = static_cast<ColorChannels>((static_cast<int>(currentColorChannel) + 1) % 5);
+          i++;
+        }
+      }
+      tableMotor.setSpeed(100);
     }
     return;
   }
-
+  #pragma endregion controlInitializationRoutine
 
   // update colors as needed
   if (k_colorUpdateDelay.ready()) {
