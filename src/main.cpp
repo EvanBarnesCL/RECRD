@@ -9,6 +9,7 @@
 
 #include <Arduino.h>
 #include <Crunchlabs_DRV8835.h>
+#include <Wire.h>
 #include <VEML3328.h>
 #include <PWMFreak.h>
 #define MOZZI_CONTROL_RATE 128
@@ -164,6 +165,41 @@ AnalogEncoder armEncoder(ARM_ENC_PIN);
 int32_t tableCumulativePosition;
 int32_t armCumulativePosition;
 
+
+// **********************************************************************************
+// Color sensor
+// **********************************************************************************
+
+VEML3328 RGBCIR;
+
+enum class ColorChannels {
+  RED,
+  GREEN,
+  BLUE,
+  CLEAR,
+  IR
+};
+
+ColorChannels currentColorChannel = ColorChannels::RED;
+
+struct ColorValues {
+  uint16_t red = 0;
+  uint16_t green = 0;
+  uint16_t blue = 0;
+  uint16_t clear = 0;
+  uint16_t IR = 0;
+};
+
+ColorValues colorData;
+bool updateChannels[5] = {false, false, false, false, false}; // Flags to control which channels to update. defaults to all five off.
+
+bool updateColorReadings(ColorValues *colorReadings);
+void printColorData();
+
+// delay timer for updating color data
+EventDelay k_colorUpdateDelay;
+
+
 // **********************************************************************************
 // Potentiometers
 // **********************************************************************************
@@ -200,50 +236,60 @@ void setup()
   Serial.println("starting");
 
 
-
   // turn on the LED to illuminate the scene for the color sensor
   digitalWrite(LED_PIN, HIGH);
 
-  delay(1000);
-
-  // Serial.println(analogRead(TABLE_ENC_PIN));
-  // delay(100);
-  // Serial.println(mozziAnalogRead<10>(TABLE_ENC_PIN));
-  // uint16_t start = millis();
-  // while (millis() - start < 1000);
-  // Serial.println(mozziAnalogRead<10>(TABLE_ENC_PIN));
-
-  // while (1);
-
-
+  // Calibrate the encoders before Mozzi starts. Calibration relies on stock analogRead(),
+  // which is blocking. 
   tableEncoder.begin();
   tableEncoder.calibrate();
   armEncoder.begin();
   armEncoder.calibrate();
 
 
+  // set up the color sensor over i2c
+  Wire.begin(); 
+  if (!RGBCIR.begin()) {                                   
+    Serial.println("ERROR: couldn't detect the sensor");
+    while (1){}            
+  }
+  // IMPORTANT: Set the I2C clock to 400kHz fast mode AFTER initializing the connection to the sensor.
+  // Need to use fastest I2C possible to minimize latency for Mozzi.
+  Wire.setClock(400000);
+
+  // Configure the color sensor
+  RGBCIR.Enable();
+  RGBCIR.setGain(3);
+  RGBCIR.setSensitivity(high_sens);
+  RGBCIR.setDG(4);
+  RGBCIR.setIntegrationTime(IT_50MS);
+
+  // Define which color channels to update here. Set to true to enable that color channel.
+  updateChannels[static_cast<int>(ColorChannels::RED)] = true;
+  updateChannels[static_cast<int>(ColorChannels::GREEN)] = true;
+  updateChannels[static_cast<int>(ColorChannels::BLUE)] = true;
+  updateChannels[static_cast<int>(ColorChannels::CLEAR)] = true;
+  updateChannels[static_cast<int>(ColorChannels::IR)] = true;
+
 
   #ifdef USE_FAST_PWM
-  // use fast PWM to remove audible noise from driving the motors
-  setPwmFrequency(5, 1);
+  // use fast PWM to remove audible noise from driving the motors. 
+  // IMPORTANT: This breaks millis() and delay(), and may have other effects I haven't
+  // found yet. After this line, you can't use millis() or delay() calls and have them
+  // behave as expected.
+  setPwmFrequency(5, 1);    // sets Timer0 clock divisor to 1 instead of 64
   #endif
 
 
+  delay(1000);
   // start Mozzi
   kVib.setFreq(221.0f);
   startMozzi(MOZZI_CONTROL_RATE);
 
-  // take initial reading on all analog channels to prime the buffer
-  // mozziAnalogRead<10>(ARM_ENC_PIN);
-  // mozziAnalogRead<10>(TABLE_ENC_PIN);
-  // mozziAnalogRead<10>(MIDDLE_POT_PIN);
-  // mozziAnalogRead<10>(BACK_POT_PIN);
-  // mozziAnalogRead<8>(VOLUME_POT_PIN);
-
 
   k_printTimer.set(100);
-
-  // tableMotor.setSpeed(250);
+  k_colorUpdateDelay.set(50);
+  tableMotor.setSpeed(250);
 }
 
 
@@ -252,11 +298,15 @@ void setup()
 // **********************************************************************************
 
 void updateControl() {
+  bool newColorData = false;
   static bool reversed = false;
   static uint8_t firstControlLoops = 0;
 
-  // this will run for the first couple iterations to prime the mozziAnalogRead buffers.
+  // this will run for the first iteration to prime the mozziAnalogRead buffers.
   // this is necessary because of the way mozziAnalogRead asynchronously handles the ADC.
+  // This has to be done at the start of updateControl() rather than during setup() because
+  // mozziAnalogRead relies on interrupts generated during updateControl to actually start
+  // and gather analog readings. Fortunately we only need to do one read to prime the buffer.
   if (firstControlLoops < 1) {
     tableEncoder.getCumulativePosition();
     armEncoder.getCumulativePosition();
@@ -267,6 +317,19 @@ void updateControl() {
     return;
   }
 
+
+  // update colors as needed
+  if (k_colorUpdateDelay.ready()) {
+    newColorData = updateColorReadings(&colorData);
+    k_colorUpdateDelay.start();
+  }
+  // if there is new color data, print it to the monitor
+  if (newColorData) {
+    printColorData();
+  }
+  
+  // rotate to updating the next color channel - only one gets updated each loop
+  currentColorChannel = static_cast<ColorChannels>((static_cast<int>(currentColorChannel) + 1) % 5);
 
   
   float vibrato = depth * kVib.next();
@@ -295,7 +358,7 @@ void updateControl() {
     tableMotor.setSpeed(tableMotor.getSpeedCommand() * -1);
     reversed = true;
   }
-  // tableEncVal = mozziAnalogRead<10>(TABLE_ENC_PIN);
+  
   
   middlePotVal = mozziAnalogRead<10>(MIDDLE_POT_PIN);
   backPotVal = mozziAnalogRead<10>(BACK_POT_PIN);
@@ -303,11 +366,6 @@ void updateControl() {
   if (k_printTimer.ready()) {
     // Combine the values into a single string with labels and print to the serial monitor
     String output;
-    // if (tableMotor.getSpeedCommand() > 0) {
-    //   output = "Table Direction: CCW";
-    // } else {
-    //   output = "Table Direction: CW";
-    // }
     output += "  ";
     output += "T_REV: " + String(tableRevolutions) + "  " +
               "T_ANGLE: " + String(tableEncVal) + "  " +
@@ -318,7 +376,7 @@ void updateControl() {
               "F_PIN: " + String(globalGain) + "  " +
               "M_PIN: " + String(middlePotVal) + "  " +
               "B_PIN: " + String(backPotVal);
-    Serial.println(output);
+    // Serial.println(output);
     k_printTimer.start();
   }
 }
@@ -383,4 +441,56 @@ inline int16_t encoderToDistance(int16_t position) {
 inline int16_t distanceToEncoder(int16_t distance) {
     if (distance < 0 || distance > 100) return 0;
     return ((int32_t)distance * 10);
+}
+
+
+
+bool updateColorReadings(ColorValues *colorReadings) {
+  // check to see if the channel is enabled && if the current color channel needs to be updated
+  if (updateChannels[static_cast<int>(ColorChannels::RED)] && currentColorChannel == ColorChannels::RED) {
+    colorReadings->red = RGBCIR.getRed();
+  } else if (updateChannels[static_cast<int>(ColorChannels::GREEN)] && currentColorChannel == ColorChannels::GREEN) {
+    colorReadings->green = RGBCIR.getGreen();
+  } else if (updateChannels[static_cast<int>(ColorChannels::BLUE)] && currentColorChannel == ColorChannels::BLUE) {
+    colorReadings->blue = RGBCIR.getBlue();
+  } else if (updateChannels[static_cast<int>(ColorChannels::CLEAR)] && currentColorChannel == ColorChannels::CLEAR) {
+    colorReadings->clear = RGBCIR.getClear();
+  } else if (updateChannels[static_cast<int>(ColorChannels::IR)] && currentColorChannel == ColorChannels::IR) {
+    colorReadings->IR = RGBCIR.getIR();
+  } else {
+    return false;   // no color data was updated, so return false
+  }
+  return true;      // indicates that new color data is available
+}
+
+
+void printColorData() {
+  bool first = true; // To manage commas between printed values
+
+  if (updateChannels[static_cast<int>(ColorChannels::RED)]) {
+    if (!first) Serial.print(" "); else first = false;
+    // Serial.print("Red:");
+    Serial.print(colorData.red);
+  }
+  if (updateChannels[static_cast<int>(ColorChannels::GREEN)]) {
+    if (!first) Serial.print(" "); else first = false;
+    // Serial.print("Green:");
+    Serial.print(colorData.green);
+  }
+  if (updateChannels[static_cast<int>(ColorChannels::BLUE)]) {
+    if (!first) Serial.print(" "); else first = false;
+    // Serial.print("Blue:");
+    Serial.print(colorData.blue);
+  }
+  if (updateChannels[static_cast<int>(ColorChannels::CLEAR)]) {
+    if (!first) Serial.print(" "); else first = false;
+    // Serial.print("Clear:");
+    Serial.print(colorData.clear);
+  }
+  if (updateChannels[static_cast<int>(ColorChannels::IR)]) {
+    if (!first) Serial.print(" "); else first = false;
+    // Serial.print("IR:");
+    Serial.print(colorData.IR);
+  }
+  Serial.println();
 }
