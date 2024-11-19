@@ -152,7 +152,9 @@ constexpr uint8_t LED_PIN = A3;
 DRV8835 tableMotor(TABLE_SPEED_PIN, TABLE_DIR_PIN, 90, true);
 DRV8835 armMotor(ARM_SPEED_PIN, ARM_DIR_PIN, 160, false);
 
-// int16_t getGearboxAngle();
+
+void homeArm();
+int16_t getGearboxAngle(bool useAnalogRead = false);
 inline int16_t encoderToDistance(int16_t position);
 inline int16_t distanceToEncoder(int16_t distance);
 
@@ -244,6 +246,7 @@ void setup()
   tableEncoder.begin();
   tableEncoder.calibrate();
   armEncoder.begin();
+  homeArm();
   armEncoder.calibrate();
 
 
@@ -325,11 +328,16 @@ void updateControl() {
   }
   // if there is new color data, print it to the monitor
   if (newColorData) {
-    printColorData();
+    // printColorData();
   }
   
   // rotate to updating the next color channel - only one gets updated each loop
   currentColorChannel = static_cast<ColorChannels>((static_cast<int>(currentColorChannel) + 1) % 5);
+
+
+  int16_t cycloidalAngle = getGearboxAngle();
+  int16_t linearPosition = encoderToDistance(cycloidalAngle);
+
 
   
   float vibrato = depth * kVib.next();
@@ -376,7 +384,7 @@ void updateControl() {
               "F_PIN: " + String(globalGain) + "  " +
               "M_PIN: " + String(middlePotVal) + "  " +
               "B_PIN: " + String(backPotVal);
-    // Serial.println(output);
+    Serial.println(output);
     k_printTimer.start();
   }
 }
@@ -418,16 +426,69 @@ void loop() {
 
 
 
-// int16_t getGearboxAngle() {  // Changed return type to int16_t
-//     // Get cumulative position from encoder
-//     int32_t motorPosition = armEncoder.getCumulativePosition(); 
+void homeArm() {
+    armMotor.setSpeed(-255);
+    int16_t lastPosition = 0, currentPosition = 0;
+    bool homed = false;
+    uint32_t lastUpdateTime = millis();
+    uint32_t startTime = millis();
+    int16_t hysteresisVal = 10;
+    constexpr uint32_t HOMING_TIMEOUT = 15000 * 64;  // 15 second timeout
+
+    while (!homed) {
+        if (millis() - startTime > HOMING_TIMEOUT) {
+            armMotor.setSpeed(0);
+            Serial.println("homing timeout!");
+            return;
+        }
+
+        // armEncoder.getCumulativePosition();
+        // currentPosition = armEncoder.getAngle();
+        currentPosition = analogRead(ARM_ENC_PIN);
+        // Serial.print("homing: ");
+        String homingOutput = "homing. last pos: " + String(lastPosition) + "    current pos: " + String(currentPosition); 
+        Serial.println(homingOutput);
+
+        if (millis() - lastUpdateTime > 1000) {
+            Serial.println("homing stop check");
+            if ((lastPosition > currentPosition - hysteresisVal) && 
+                (lastPosition < currentPosition + hysteresisVal)) {
+                homed = true;
+                armMotor.setSpeed(0);
+                // armEncoder.calibrate();
+                // armEncoder.resetCumulativePosition();
+                // move back off the homing stop to true zero.
+                armMotor.setSpeed(100);
+
+                while (encoderToDistance(getGearboxAngle(true)) < 3) {
+                }
+                armMotor.setSpeed(0);
+                Serial.println("complete");
+                return;
+            }
+            lastPosition = currentPosition;
+            lastUpdateTime = millis();
+        }
+    }
+}
+
+
+
+int16_t getGearboxAngle(bool useAnalogRead = false) {  // Changed return type to int16_t
+    // Get cumulative position from encoder
+    int32_t motorPosition;
+    if (useAnalogRead) {
+      motorPosition = analogRead(ARM_ENC_PIN);
+    } else {
+      motorPosition = armEncoder.getCumulativePosition(); 
+    }
     
-//     // Get position within one full output rotation, preserving sign
-//     motorPosition = (motorPosition % (30 * 1024));
+    // Get position within one full output rotation, preserving sign
+    motorPosition = (motorPosition % (30 * 1024));
     
-//     // Scale to -1024 to +1024 range (for ±180 degrees)
-//     return (int16_t)((motorPosition * 2048L) / (30 * 1024));
-// }
+    // Scale to -1024 to +1024 range (for ±180 degrees)
+    return (int16_t)((motorPosition * 2048L) / (30 * 1024));
+}
 
 
 
