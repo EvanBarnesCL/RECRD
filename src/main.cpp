@@ -10,7 +10,6 @@
 #include <Arduino.h>
 #include <Crunchlabs_DRV8835.h>
 #include <VEML3328.h>
-// #include <Wire.h>
 #include <PWMFreak.h>
 #define MOZZI_CONTROL_RATE 128
 #include <Mozzi.h>
@@ -18,7 +17,6 @@
 #include <tables/sin2048_int8.h>
 #include <IntMap.h>
 #include <EventDelay.h>
-// #include <AnalogEncoder.h>
 
 
 // **********************************************************************************
@@ -38,8 +36,10 @@ public:
         _lastPosition = update(); // Initialize last position
     }
 
+    // this function relies on stock analogRead and is best to call when Mozzi is not running
     void calibrate() {
-        _offset = readAnalog();
+      _offset = analogRead(_pin);
+      _position = 0;
     }
 
     int update() {
@@ -115,15 +115,13 @@ private:
     int16_t _lastPosition = 0;// Last known position
     int16_t _lastReadValue = 0;// Last read value
 
+    bool _newCalibrate = true;
+
     static const int BITMASK = 0x3FF;  // 10-bit bitmask (1023 in decimal)
 
     // helper function to make switching between analogRead and mozziAnalogRead simpler
     uint16_t readAnalog() {
-        #ifdef USE_MOZZI_ANALOG_READ
-            return mozziAnalogRead<10>(_pin);  // Use 16-bit version
-        #else
-            return analogRead(_pin);
-        #endif
+      return mozziAnalogRead<10>(_pin);  // Use 16-bit version
     }
 };
 
@@ -155,7 +153,11 @@ inline int16_t distanceToEncoder(int16_t distance);
 
 uint16_t armEncVal, tableEncVal, middlePotVal, backPotVal;
 
-AnalogEncoder tableEncoder;
+AnalogEncoder tableEncoder(TABLE_ENC_PIN);
+AnalogEncoder armEncoder(ARM_ENC_PIN);
+
+int32_t tableCumulativePosition;
+int32_t armCumulativePosition;
 
 // **********************************************************************************
 // Potentiometers
@@ -193,18 +195,34 @@ void setup()
   Serial.println("starting");
 
 
-  #ifdef USE_FAST_PWM
-  // use fast PWM to remove audible noise from driving the motors
-  setPwmFrequency(5, 1);
-  #endif
 
   // turn on the LED to illuminate the scene for the color sensor
   digitalWrite(LED_PIN, HIGH);
 
   delay(1000);
 
+  // Serial.println(analogRead(TABLE_ENC_PIN));
+  // delay(100);
+  // Serial.println(mozziAnalogRead<10>(TABLE_ENC_PIN));
+  // uint16_t start = millis();
+  // while (millis() - start < 1000);
+  // Serial.println(mozziAnalogRead<10>(TABLE_ENC_PIN));
+
+  // while (1);
+
+
   tableEncoder.begin();
-  tableEncoder.getCumulativePosition();
+  tableEncoder.calibrate();
+  armEncoder.begin();
+  armEncoder.calibrate();
+
+
+
+  #ifdef USE_FAST_PWM
+  // use fast PWM to remove audible noise from driving the motors
+  setPwmFrequency(5, 1);
+  #endif
+
 
   // start Mozzi
   kVib.setFreq(221.0f);
@@ -220,7 +238,7 @@ void setup()
 
   k_printTimer.set(100);
 
-  tableMotor.setSpeed(50);
+  // tableMotor.setSpeed(250);
 }
 
 
@@ -229,24 +247,72 @@ void setup()
 // **********************************************************************************
 
 void updateControl() {
+  static bool reversed = false;
+  static uint8_t firstControlLoops = 0;
+
+  // this will run for the first couple iterations to prime the mozziAnalogRead buffers.
+  // this is necessary because of the way mozziAnalogRead asynchronously handles the ADC.
+  if (firstControlLoops < 1) {
+    tableEncoder.getCumulativePosition();
+    armEncoder.getCumulativePosition();
+    mozziAnalogRead<10>(VOLUME_POT_PIN);
+    mozziAnalogRead<10>(MIDDLE_POT_PIN);
+    mozziAnalogRead<10>(BACK_POT_PIN);
+    firstControlLoops++;
+    return;
+  }
+
+
+  
   float vibrato = depth * kVib.next();
   vibrato = depth * .5 * kVib.next();
   // vibrato = depth * .33 * kVib.next();
   aSin.setFreq(centre_freq+vibrato);
+
   globalGain = k_GlobalGainMap(mozziAnalogRead<8>(VOLUME_POT_PIN));
-  armEncVal = mozziAnalogRead<10>(ARM_ENC_PIN);
-  tableEncoder.getCumulativePosition();
+  
+  armCumulativePosition = armEncoder.getCumulativePosition();
+  int16_t armRevolutions = armEncoder.getRevolutions();
+  armEncVal = armEncoder.getAngle();
+  
+  tableCumulativePosition = tableEncoder.getCumulativePosition();
+  int16_t tableRevolutions = tableEncoder.getRevolutions();
   tableEncVal = tableEncoder.getAngle();
+
+  if (tableRevolutions == 0 && reversed) reversed = false;
+  
+  if (tableRevolutions > 1 && !reversed) {
+    tableMotor.setSpeed(tableMotor.getSpeedCommand() * -1);
+    reversed = true;
+  }
+
+  if (tableRevolutions < -1 && !reversed) {
+    tableMotor.setSpeed(tableMotor.getSpeedCommand() * -1);
+    reversed = true;
+  }
+  // tableEncVal = mozziAnalogRead<10>(TABLE_ENC_PIN);
+  
   middlePotVal = mozziAnalogRead<10>(MIDDLE_POT_PIN);
   backPotVal = mozziAnalogRead<10>(BACK_POT_PIN);
 
   if (k_printTimer.ready()) {
     // Combine the values into a single string with labels and print to the serial monitor
-    String output = "T_ENC: " + String(tableEncVal) + "  " +
-                    "A_ENC: " + String(armEncVal) + "  " +
-                    "F_PIN: " + String(globalGain) + "  " +
-                    "M_PIN: " + String(middlePotVal) + "  " +
-                    "B_PIN: " + String(backPotVal);
+    String output;
+    if (tableMotor.getSpeedCommand() > 0) {
+      output = "Table Direction: CCW";
+    } else {
+      output = "Table Direction: CW";
+    }
+    output += "  ";
+    output += // "T_REV: " + String(tableRevolutions) + "  " +
+              // "T_ANGLE: " + String(tableEncVal) + "  " +
+              "Table cumulative position: " + String(tableCumulativePosition) + "  " +
+              // "A_REV: " + String(armRevolutions) + "  " +
+              // "A_ENC: " + String(armEncVal) + "  " +
+              "Arm cumulative position: " + String(armCumulativePosition);
+              // "F_PIN: " + String(globalGain) + "  " +
+              // "M_PIN: " + String(middlePotVal) + "  " +
+              // "B_PIN: " + String(backPotVal);
     Serial.println(output);
     k_printTimer.start();
   }
