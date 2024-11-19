@@ -98,10 +98,15 @@ public:
         return oldPosition;
     }
 
-    uint16_t getAngle() {
+    int16_t getAngle() {
         // Extract just the current angle from the cumulative position
-        // by taking the least significant 10 bits
-        return abs(_position) & BITMASK;
+        // by taking the least significant 10 bits.
+        // This function was modified to return negative values when the
+        // cumulative position (_position) is less than 0. At least for me,
+        // this helps maintain a sense of rotation direction. Previously angle
+        // was always returned as a positive (uint16_t) value, which was confusing
+        // for negative direction rotations.
+        return (abs(_position) & BITMASK) * (_position < 0 ? -1: 1);
     }
 
 private:
@@ -151,7 +156,7 @@ inline int16_t encoderToDistance(int16_t position);
 inline int16_t distanceToEncoder(int16_t distance);
 
 
-uint16_t armEncVal, tableEncVal, middlePotVal, backPotVal;
+int16_t armEncVal, tableEncVal, middlePotVal, backPotVal;
 
 AnalogEncoder tableEncoder(TABLE_ENC_PIN);
 AnalogEncoder armEncoder(ARM_ENC_PIN);
@@ -298,21 +303,21 @@ void updateControl() {
   if (k_printTimer.ready()) {
     // Combine the values into a single string with labels and print to the serial monitor
     String output;
-    if (tableMotor.getSpeedCommand() > 0) {
-      output = "Table Direction: CCW";
-    } else {
-      output = "Table Direction: CW";
-    }
+    // if (tableMotor.getSpeedCommand() > 0) {
+    //   output = "Table Direction: CCW";
+    // } else {
+    //   output = "Table Direction: CW";
+    // }
     output += "  ";
-    output += // "T_REV: " + String(tableRevolutions) + "  " +
-              // "T_ANGLE: " + String(tableEncVal) + "  " +
+    output += "T_REV: " + String(tableRevolutions) + "  " +
+              "T_ANGLE: " + String(tableEncVal) + "  " +
               "Table cumulative position: " + String(tableCumulativePosition) + "  " +
-              // "A_REV: " + String(armRevolutions) + "  " +
-              // "A_ENC: " + String(armEncVal) + "  " +
-              "Arm cumulative position: " + String(armCumulativePosition);
-              // "F_PIN: " + String(globalGain) + "  " +
-              // "M_PIN: " + String(middlePotVal) + "  " +
-              // "B_PIN: " + String(backPotVal);
+              "A_REV: " + String(armRevolutions) + "  " +
+              "A_ENC: " + String(armEncVal) + "  " +
+              "Arm cumulative position: " + String(armCumulativePosition) + "  " +
+              "F_PIN: " + String(globalGain) + "  " +
+              "M_PIN: " + String(middlePotVal) + "  " +
+              "B_PIN: " + String(backPotVal);
     Serial.println(output);
     k_printTimer.start();
   }
