@@ -237,18 +237,26 @@ void setup()
   Serial.begin(115200);
   Serial.println("starting");
 
-
-  // turn on the LED to illuminate the scene for the color sensor
-  digitalWrite(LED_PIN, HIGH);
-
   // Calibrate the encoders before Mozzi starts. Calibration relies on stock analogRead(),
   // which is blocking. 
   tableEncoder.begin();
   tableEncoder.calibrate();
   armEncoder.begin();
+  
+  // Start the homing process for the arm. First, move away from the homing stop for half
+  // a second to be sure that we actually hit the stop later on.
+  armMotor.setSpeed(255);
+  delay(500);
+  // Now home the arm. Note that this function depends on millis(), delay(), and analogRead(),
+  // so it has to be called in setup() before changing the PWM clock rate for the motor control
+  // PWM pins and before starting Mozzi.
   homeArm();
   armEncoder.calibrate();
 
+  // bring the sensor above the edge of the table
+  // armMotor.setSpeed(200);
+  // while (encoderToDistance(getGearboxAngle(true)) < 30);
+  // armMotor.setSpeed(0);
 
   // set up the color sensor over i2c
   Wire.begin(); 
@@ -292,7 +300,7 @@ void setup()
 
   k_printTimer.set(100);
   k_colorUpdateDelay.set(50);
-  tableMotor.setSpeed(250);
+  // tableMotor.setSpeed(250);
 }
 
 
@@ -303,20 +311,27 @@ void setup()
 void updateControl() {
   bool newColorData = false;
   static bool reversed = false;
-  static uint8_t firstControlLoops = 0;
+  static bool initializeControl = true;
 
   // this will run for the first iteration to prime the mozziAnalogRead buffers.
   // this is necessary because of the way mozziAnalogRead asynchronously handles the ADC.
   // This has to be done at the start of updateControl() rather than during setup() because
   // mozziAnalogRead relies on interrupts generated during updateControl to actually start
   // and gather analog readings. Fortunately we only need to do one read to prime the buffer.
-  if (firstControlLoops < 1) {
+  if (initializeControl) {
     tableEncoder.getCumulativePosition();
     armEncoder.getCumulativePosition();
     mozziAnalogRead<10>(VOLUME_POT_PIN);
     mozziAnalogRead<10>(MIDDLE_POT_PIN);
     mozziAnalogRead<10>(BACK_POT_PIN);
-    firstControlLoops++;
+    armMotor.setSpeed(100);
+    if (encoderToDistance(getGearboxAngle()) > 30) {
+      armMotor.setSpeed(0);
+      initializeControl = false;
+      tableMotor.setSpeed(100);
+      // turn on the LED to illuminate the scene for the color sensor
+      digitalWrite(LED_PIN, HIGH);
+    }
     return;
   }
 
@@ -328,7 +343,7 @@ void updateControl() {
   }
   // if there is new color data, print it to the monitor
   if (newColorData) {
-    // printColorData();
+    printColorData();
   }
   
   // rotate to updating the next color channel - only one gets updated each loop
@@ -384,7 +399,7 @@ void updateControl() {
               "F_PIN: " + String(globalGain) + "  " +
               "M_PIN: " + String(middlePotVal) + "  " +
               "B_PIN: " + String(backPotVal);
-    Serial.println(output);
+    // Serial.println(output);
     k_printTimer.start();
   }
 }
@@ -427,49 +442,34 @@ void loop() {
 
 
 void homeArm() {
-    armMotor.setSpeed(-255);
-    int16_t lastPosition = 0, currentPosition = 0;
-    bool homed = false;
-    uint32_t lastUpdateTime = millis();
-    uint32_t startTime = millis();
-    int16_t hysteresisVal = 10;
-    constexpr uint32_t HOMING_TIMEOUT = 15000 * 64;  // 15 second timeout
-
-    while (!homed) {
-        if (millis() - startTime > HOMING_TIMEOUT) {
-            armMotor.setSpeed(0);
-            Serial.println("homing timeout!");
-            return;
+  uint16_t lastEncoderVal, currentEncoderVal, stopTimerStart, stopTimerCurrent;
+  bool timerStarted = false, homed = false;
+  armMotor.setSpeed(-255);
+  while (!homed) {
+    currentEncoderVal = analogRead(ARM_ENC_PIN);
+    bool encoderStopped = (currentEncoderVal < lastEncoderVal + 2) && (currentEncoderVal > lastEncoderVal - 2);
+    Serial.println(encoderStopped ? "true" : "false");
+    if (!timerStarted) {
+      if (encoderStopped) {
+        timerStarted = true;
+        stopTimerStart = millis();
+      }
+    } else {
+      stopTimerCurrent = millis();
+      if (encoderStopped) {
+        if (stopTimerCurrent - stopTimerStart > 500) {
+          Serial.println("finished homing");
+          homed = true;   // homing condition complete, return to main program
         }
-
-        // armEncoder.getCumulativePosition();
-        // currentPosition = armEncoder.getAngle();
-        currentPosition = analogRead(ARM_ENC_PIN);
-        // Serial.print("homing: ");
-        String homingOutput = "homing. last pos: " + String(lastPosition) + "    current pos: " + String(currentPosition); 
-        Serial.println(homingOutput);
-
-        if (millis() - lastUpdateTime > 1000) {
-            Serial.println("homing stop check");
-            if ((lastPosition > currentPosition - hysteresisVal) && 
-                (lastPosition < currentPosition + hysteresisVal)) {
-                homed = true;
-                armMotor.setSpeed(0);
-                // armEncoder.calibrate();
-                // armEncoder.resetCumulativePosition();
-                // move back off the homing stop to true zero.
-                armMotor.setSpeed(100);
-
-                while (encoderToDistance(getGearboxAngle(true)) < 3) {
-                }
-                armMotor.setSpeed(0);
-                Serial.println("complete");
-                return;
-            }
-            lastPosition = currentPosition;
-            lastUpdateTime = millis();
-        }
+      } else {
+        timerStarted = false;     // the encoder value has changed, so reset the timer
+      }
     }
+    lastEncoderVal = currentEncoderVal;
+    // small delay make sure the loop doesn't run so fast as to get multiple readings at the same encoder
+    // position if they motor hasn't actually stopped spinning
+    delay(1); 
+  }
 }
 
 
@@ -479,12 +479,14 @@ int16_t getGearboxAngle(bool useAnalogRead = false) {  // Changed return type to
     int32_t motorPosition;
     if (useAnalogRead) {
       motorPosition = analogRead(ARM_ENC_PIN);
+      // Serial.print("enc: "); Serial.print(motorPosition);
     } else {
       motorPosition = armEncoder.getCumulativePosition(); 
     }
     
     // Get position within one full output rotation, preserving sign
     motorPosition = (motorPosition % (30 * 1024));
+    // Serial.print("    motor pos: "); Serial.println(motorPosition);
     
     // Scale to -1024 to +1024 range (for ±180 degrees)
     return (int16_t)((motorPosition * 2048L) / (30 * 1024));
