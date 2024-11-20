@@ -414,17 +414,17 @@ void updateControl() {
   }
 
 
-  if (tableRevolutions == 0 && reversed) reversed = false;
+  // if (tableRevolutions == 0 && reversed) reversed = false;
   
-  if (tableRevolutions > 1 && !reversed) {
-    tableMotor.setSpeed(tableMotor.getSpeedCommand() * -1);
-    reversed = true;
-  }
+  // if (tableRevolutions > 1 && !reversed) {
+  //   tableMotor.setSpeed(tableMotor.getSpeedCommand() * -1);
+  //   reversed = true;
+  // }
 
-  if (tableRevolutions < -1 && !reversed) {
-    tableMotor.setSpeed(tableMotor.getSpeedCommand() * -1);
-    reversed = true;
-  }
+  // if (tableRevolutions < -1 && !reversed) {
+  //   tableMotor.setSpeed(tableMotor.getSpeedCommand() * -1);
+  //   reversed = true;
+  // }
   
   
   globalGain = k_GlobalGainMap(mozziAnalogRead<8>(VOLUME_POT_PIN));
