@@ -270,9 +270,9 @@ void setup()
 
   // Configure the color sensor
   RGBCIR.Enable();
-  RGBCIR.setGain(3);
+  RGBCIR.setGain(2);
   RGBCIR.setSensitivity(high_sens);
-  RGBCIR.setDG(4);
+  RGBCIR.setDG(2);
   RGBCIR.setIntegrationTime(IT_50MS);
 
   // Define which color channels to update here. Set to true to enable that color channel.
@@ -346,7 +346,7 @@ void updateControl() {
           i++;
         }
       }
-      tableMotor.setSpeed(100);
+      tableMotor.setSpeed(255);
     }
     return;
   }
@@ -361,30 +361,58 @@ void updateControl() {
   if (newColorData) {
     printColorData();
   }
-  
   // rotate to updating the next color channel - only one gets updated each loop
   currentColorChannel = static_cast<ColorChannels>((static_cast<int>(currentColorChannel) + 1) % 5);
 
 
-  int16_t cycloidalAngle = getGearboxAngle();
-  int16_t linearPosition = encoderToDistance(cycloidalAngle);
+
+  static int16_t lastTableRevs = 0;
+  static int8_t armTargetPos = 30;
+  static int8_t armDir = 1;
+
+  tableCumulativePosition = tableEncoder.getCumulativePosition();
+  int16_t tableRevolutions = tableEncoder.getRevolutions();
+  tableEncVal = tableEncoder.getAngle();
 
 
-  
-  float vibrato = depth * kVib.next();
-  vibrato = depth * .5 * kVib.next();
-  // vibrato = depth * .33 * kVib.next();
-  aSin.setFreq(centre_freq+vibrato);
-
-  globalGain = k_GlobalGainMap(mozziAnalogRead<8>(VOLUME_POT_PIN));
-  
   armCumulativePosition = armEncoder.getCumulativePosition();
   int16_t armRevolutions = armEncoder.getRevolutions();
   armEncVal = armEncoder.getAngle();
   
-  tableCumulativePosition = tableEncoder.getCumulativePosition();
-  int16_t tableRevolutions = tableEncoder.getRevolutions();
-  tableEncVal = tableEncoder.getAngle();
+  int16_t cycloidalAngle = getGearboxAngle();
+  int16_t linearPosition = encoderToDistance(cycloidalAngle);  
+
+  if (lastTableRevs != tableRevolutions) {
+    if (armDir > 0) {
+      if (linearPosition < 60) {
+        armTargetPos += 5;
+      } else {
+        armDir = -1;
+        armTargetPos -=5;
+      }
+    } else if (armDir < 0) {
+      if (linearPosition > 30) {
+        armTargetPos -=5;
+      } else {
+        armDir = 1;
+        armTargetPos +=5;
+      }
+    }
+    lastTableRevs = tableRevolutions;
+  } 
+
+  
+  if (armTargetPos > linearPosition) {
+    // Serial.println("increasing");
+    armMotor.setSpeed(1);
+  } else if (armTargetPos < linearPosition) {
+    // Serial.println("decreasing");
+    armMotor.setSpeed(-1);
+  } else {
+    // Serial.println("stopped");
+    armMotor.setSpeed(0);
+  }
+
 
   if (tableRevolutions == 0 && reversed) reversed = false;
   
@@ -399,6 +427,7 @@ void updateControl() {
   }
   
   
+  globalGain = k_GlobalGainMap(mozziAnalogRead<8>(VOLUME_POT_PIN));
   middlePotVal = mozziAnalogRead<10>(MIDDLE_POT_PIN);
   backPotVal = mozziAnalogRead<10>(BACK_POT_PIN);
 
@@ -418,6 +447,13 @@ void updateControl() {
     // Serial.println(output);
     k_printTimer.start();
   }
+
+
+  float vibrato = depth * kVib.next();
+  vibrato = depth * .5 * kVib.next();
+  // vibrato = depth * .33 * kVib.next();
+  aSin.setFreq(centre_freq+vibrato);
+
 }
 
 
@@ -545,31 +581,51 @@ bool updateColorReadings(ColorValues *colorReadings) {
 
 void printColorData() {
   bool first = true; // To manage commas between printed values
+  struct updatingColors {
+    bool r = false;
+    bool g = false;
+    bool b = false;
+    bool c = false;
+    bool ir = false;
+  };
+
+  updatingColors channels;
 
   if (updateChannels[static_cast<int>(ColorChannels::RED)]) {
     if (!first) Serial.print(" "); else first = false;
     // Serial.print("Red:");
+    channels.r = true;
     Serial.print(colorData.red);
   }
   if (updateChannels[static_cast<int>(ColorChannels::GREEN)]) {
     if (!first) Serial.print(" "); else first = false;
     // Serial.print("Green:");
+    channels.g = true;
     Serial.print(colorData.green);
   }
   if (updateChannels[static_cast<int>(ColorChannels::BLUE)]) {
     if (!first) Serial.print(" "); else first = false;
     // Serial.print("Blue:");
+    channels.b = true;
     Serial.print(colorData.blue);
   }
   if (updateChannels[static_cast<int>(ColorChannels::CLEAR)]) {
     if (!first) Serial.print(" "); else first = false;
     // Serial.print("Clear:");
+    channels.c = true;
     Serial.print(colorData.clear);
   }
   if (updateChannels[static_cast<int>(ColorChannels::IR)]) {
     if (!first) Serial.print(" "); else first = false;
     // Serial.print("IR:");
+    channels.ir = true;
     Serial.print(colorData.IR);
   }
+  if (channels.r && channels.g && channels.b && channels.c) {
+    int32_t combined = colorData.red + colorData.green + colorData.blue;
+    int32_t diff = colorData.clear - combined;
+    Serial.print("    combined (r+g+b) = "); Serial.print(combined);
+    Serial.print("    clear - combined = "); Serial.print(diff);
+  } 
   Serial.println();
 }
