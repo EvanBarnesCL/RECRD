@@ -218,11 +218,13 @@ Oscil <2048, MOZZI_AUDIO_RATE> aSin(SIN2048_DATA);
 Oscil <2048, MOZZI_CONTROL_RATE> kVib(SIN2048_DATA);
 float centre_freq = 440.0;
 float depth = 5.0;
+float vibratoFreq = 221.0;
 
 // global gain controls
 constexpr uint8_t MAX_GLOBAL_GAIN = 64;   // maximum global gain value
 uint8_t globalGain = 12;           // global gain value for changing total volume output. non-linear changes in volume
 IntMap k_GlobalGainMap(0, 255, 0, MAX_GLOBAL_GAIN);     // maps potentiometer value to be within 0-MAX_GLOBAL_GAIN so you don't blow your ears out
+IntMap k_redChannelVibMap(0, 65535, 80, 250);
 
 EventDelay k_printTimer;
 
@@ -294,7 +296,7 @@ void setup()
 
   delay(1000);
   // start Mozzi
-  kVib.setFreq(221.0f);
+  kVib.setFreq(vibratoFreq);
   startMozzi(MOZZI_CONTROL_RATE);
 
 
@@ -449,10 +451,13 @@ void updateControl() {
   }
 
 
-  float vibrato = depth * kVib.next();
-  vibrato = depth * .5 * kVib.next();
+  // float vibrato; 
+  // kVib.setFreq(static_cast<float>(k_redChannelVibMap(colorData.red)));
+  // vibrato = depth * kVib.next();
+  // vibrato = depth * .5 * kVib.next();
   // vibrato = depth * .33 * kVib.next();
-  aSin.setFreq(centre_freq+vibrato);
+  aSin.setFreq(static_cast<float>(k_redChannelVibMap(colorData.red)));
+
 
 }
 
@@ -467,6 +472,7 @@ void updateControl() {
 
 AudioOutput_t updateAudio() {
   return MonoOutput::from8Bit((aSin.next() * globalGain)>>8);             // 8 bit sine osc * 8 bit globalGain makes 16 bits total (2^8 * 2^8 = 2^(8+8) = 2^16)
+  // return StereoOutput::from8Bit((aSin.next() * globalGain)>>8);
 }
 
 
