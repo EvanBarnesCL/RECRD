@@ -38,9 +38,9 @@ public:
     }
 
     // this function relies on stock analogRead and is best to call when Mozzi is not running
-    void calibrate() {
+    void calibrate(int calibrationValue = 0) {
       _offset = analogRead(_pin);
-      _position = 0;
+      _position = calibrationValue;
     }
 
     int update() {
@@ -149,15 +149,18 @@ constexpr uint8_t TABLE_ENC_PIN = A6;
 constexpr uint8_t LED_PIN = A3;
 
 
-DRV8835 tableMotor(TABLE_SPEED_PIN, TABLE_DIR_PIN, 90, true);
-DRV8835 armMotor(ARM_SPEED_PIN, ARM_DIR_PIN, 160, false);
+DRV8835 tableMotor(TABLE_SPEED_PIN, TABLE_DIR_PIN, 50, true);
+DRV8835 armMotor(ARM_SPEED_PIN, ARM_DIR_PIN, 50, false);
 
 
 void homeArm();
 bool debounceSwitch();
 int16_t getGearboxAngle(bool useAnalogRead = false);
-inline int16_t encoderToDistance(int16_t position);
-inline int16_t distanceToEncoder(int16_t distance);
+// inline int16_t encoderToDistance(int16_t position);
+// inline int16_t distanceToEncoder(int16_t distance);
+
+int16_t armDistanceToAngle(int16_t distance);     // calculates arm encoder angle from linear position of color sensor
+int16_t armAngleToDistance(int16_t angle);        // calculates linear position of color sensor based on arm encoder angle
 
 
 int16_t armEncVal, tableEncVal, middlePotVal, backPotVal;
@@ -230,40 +233,35 @@ IntMap k_redChannelVibMap(0, 65535, 80, 250);
 
 EventDelay k_printTimer;
 
+
+
+
 // **********************************************************************************
 // Setup
 // **********************************************************************************
-
-
 
 void setup()
 {
   Serial.begin(115200);
   Serial.println("starting");
 
+  // set up pin modes
+  pinMode(HOMING_SWITCH, INPUT_PULLUP);
+
   // Calibrate the encoders before Mozzi starts. Calibration relies on stock analogRead(),
   // which is blocking. 
   tableEncoder.begin();
-  tableEncoder.calibrate();
+  tableEncoder.calibrate(0);    // calibrate to 0 as starting position for the table
   armEncoder.begin();
   
-  // set up pin modes
-  pinMode(HOMING_SWITCH, INPUT_PULLUP);
-  
-  // Start the homing process for the arm. First, move away from the homing stop for half
-  // a second to be sure that we actually hit the stop later on.
-  // armMotor.setSpeed(255);
-  delay(500);
-  // Now home the arm. Note that this function depends on millis(), delay(), and analogRead(),
-  // so it has to be called in setup() before changing the PWM clock rate for the motor control
-  // PWM pins and before starting Mozzi.
+  // Now home the arm. Note that this function depends on delay() and analogRead(),
+  // so it has to be called in setup() before starting Mozzi, and before changing 
+  // the PWM clock rate for the motor controller's PWM pins.
   homeArm();
-  armEncoder.calibrate();
-
-  // bring the sensor above the edge of the table
-  // armMotor.setSpeed(200);
-  // while (encoderToDistance(getGearboxAngle(true)) < 30);
-  // armMotor.setSpeed(0);
+  // The arm is at the home position, so we can calibrate the encoder finally.
+  // Adding settling delay before calibrating to be sure the motor is fully stopped.
+  delay(100);
+  armEncoder.calibrate(512);    // calibrate to 512 as our starting encoder measurement
 
   // set up the color sensor over i2c
   Wire.begin(); 
@@ -289,6 +287,7 @@ void setup()
   updateChannels[static_cast<int>(ColorChannels::CLEAR)] = true;
   updateChannels[static_cast<int>(ColorChannels::IR)] = true;
 
+  delay(1000);
 
   #ifdef USE_FAST_PWM
   // use fast PWM to remove audible noise from driving the motors. 
@@ -299,11 +298,9 @@ void setup()
   #endif
 
 
-  delay(1000);
   // start Mozzi
   kVib.setFreq(vibratoFreq);
   startMozzi(MOZZI_CONTROL_RATE);
-
 
   k_printTimer.set(100);
   k_colorUpdateDelay.set(50);
@@ -336,9 +333,17 @@ void updateControl() {
     mozziAnalogRead<10>(VOLUME_POT_PIN);
     mozziAnalogRead<10>(MIDDLE_POT_PIN);
     mozziAnalogRead<10>(BACK_POT_PIN);
-    armMotor.setSpeed(100);
+    armMotor.setSpeed(-100);
     // bring the color sensor over the edge of the table
-    if (encoderToDistance(getGearboxAngle()) > 30) {
+
+    int16_t currentArmPosition = armAngleToDistance(armEncoder.getCumulativePosition());
+    Serial.print(currentArmPosition);
+    Serial.print("   measured: ");
+    Serial.print(armEncoder.getCumulativePosition());
+    Serial.print("   calculated: ");
+    Serial.println(armDistanceToAngle(currentArmPosition));
+
+    if (currentArmPosition <= 70) {
       armMotor.setSpeed(0);
       initializeControl = false;
       // turn on the LED to illuminate the scene for the color sensor
@@ -355,6 +360,25 @@ void updateControl() {
       }
       tableMotor.setSpeed(255);
     }
+
+
+    // if (encoderToDistance(getGearboxAngle()) > 30) {
+    //   armMotor.setSpeed(0);
+    //   initializeControl = false;
+    //   // turn on the LED to illuminate the scene for the color sensor
+    //   digitalWrite(LED_PIN, HIGH);
+    //   // now prime buffer for the values for all 5 color sensor channels
+    //   for (int i = 0; i < 10; ) {
+    //     if (k_colorUpdateDelay.ready()) {
+    //       newColorData = updateColorReadings(&colorData);
+    //       k_colorUpdateDelay.start();
+    //       // rotate to updating the next color channel - only one gets updated each loop
+    //       currentColorChannel = static_cast<ColorChannels>((static_cast<int>(currentColorChannel) + 1) % 5);
+    //       i++;
+    //     }
+    //   }
+    //   tableMotor.setSpeed(255);
+    // }
     return;
   }
   #pragma endregion controlInitializationRoutine
@@ -372,7 +396,7 @@ void updateControl() {
   currentColorChannel = static_cast<ColorChannels>((static_cast<int>(currentColorChannel) + 1) % 5);
 
 
-
+  /*
   static int16_t lastTableRevs = 0;
   static int8_t armTargetPos = 30;
   static int8_t armDir = 1;
@@ -419,7 +443,7 @@ void updateControl() {
     // Serial.println("stopped");
     armMotor.setSpeed(0);
   }
-
+  */
 
   // if (tableRevolutions == 0 && reversed) reversed = false;
   
@@ -438,22 +462,22 @@ void updateControl() {
   middlePotVal = mozziAnalogRead<10>(MIDDLE_POT_PIN);
   backPotVal = mozziAnalogRead<10>(BACK_POT_PIN);
 
-  if (k_printTimer.ready()) {
-    // Combine the values into a single string with labels and print to the serial monitor
-    String output;
-    output += "  ";
-    output += "T_REV: " + String(tableRevolutions) + "  " +
-              "T_ANGLE: " + String(tableEncVal) + "  " +
-              "Table cumulative position: " + String(tableCumulativePosition) + "  " +
-              "A_REV: " + String(armRevolutions) + "  " +
-              "A_ENC: " + String(armEncVal) + "  " +
-              "Arm cumulative position: " + String(armCumulativePosition) + "  " +
-              "F_PIN: " + String(globalGain) + "  " +
-              "M_PIN: " + String(middlePotVal) + "  " +
-              "B_PIN: " + String(backPotVal);
-    // Serial.println(output);
-    k_printTimer.start();
-  }
+  // if (k_printTimer.ready()) {
+  //   // Combine the values into a single string with labels and print to the serial monitor
+  //   String output;
+  //   output += "  ";
+  //   output += "T_REV: " + String(tableRevolutions) + "  " +
+  //             "T_ANGLE: " + String(tableEncVal) + "  " +
+  //             "Table cumulative position: " + String(tableCumulativePosition) + "  " +
+  //             "A_REV: " + String(armRevolutions) + "  " +
+  //             "A_ENC: " + String(armEncVal) + "  " +
+  //             "Arm cumulative position: " + String(armCumulativePosition) + "  " +
+  //             "F_PIN: " + String(globalGain) + "  " +
+  //             "M_PIN: " + String(middlePotVal) + "  " +
+  //             "B_PIN: " + String(backPotVal);
+  //   // Serial.println(output);
+  //   k_printTimer.start();
+  // }
 
 
   // float vibrato; 
@@ -505,52 +529,39 @@ void loop() {
 
 
 void homeArm() {
-  uint16_t lastEncoderVal, currentEncoderVal, stopTimerStart, stopTimerCurrent;
-  bool timerStarted = false, homed = false;
-  bool switchPressed = false;
-  // first check to see if we're starting homing with the switch already pressed
+  // first check to see if we're starting homing with the switch already pressed, move away if so
   if (digitalRead(HOMING_SWITCH) == 0) {
     armMotor.setSpeed(255);
-    delay(1000);
+    while (debounceSwitch());   // delay while the switch is held down
+    delay(500);                 // move a bit more just for clearance
     armMotor.setSpeed(0);
     delay(200);
   }
 
+  // start the arm motor spinning
   armMotor.setSpeed(-255);
-  while (!switchPressed) {
-    switchPressed = debounceSwitch();
+  // wait for the switch to be pressed
+  while (!debounceSwitch()) {
+  }
+
+  // read the current angle on the encoder
+  uint16_t switchActivatedAngle = analogRead(ARM_ENC_PIN), homeAngle = 0;
+  uint16_t switchOffsetAngle = 75;            // angular distance of the switch activation position from the desired home position
+  // set the target home position angle
+  homeAngle = switchActivatedAngle - switchOffsetAngle;    
+  homeAngle &= 1023;          // make sure this value wraps around 0 point correctly
+  armMotor.setSpeed(-64);     // slow down the motor for the final approach
+  while (analogRead(ARM_ENC_PIN) != homeAngle) {
+    // Serial.println(analogRead(ARM_ENC_PIN));
+    // just let the motor run until we hit the home angle
   }
   armMotor.setSpeed(0);
-  while (true);
-
-  // while (!homed) {
-    // currentEncoderVal = analogRead(ARM_ENC_PIN);
-    // bool encoderStopped = (currentEncoderVal < lastEncoderVal + 2) && (currentEncoderVal > lastEncoderVal - 2);
-    // Serial.println(encoderStopped ? "true" : "false");
-    // if (!timerStarted) {
-    //   if (encoderStopped) {
-    //     timerStarted = true;
-    //     stopTimerStart = millis();
-    //   }
-    // } else {
-    //   stopTimerCurrent = millis();
-    //   if (encoderStopped) {
-    //     if (stopTimerCurrent - stopTimerStart > 500) {
-    //       Serial.println("finished homing");
-    //       homed = true;   // homing condition complete, return to main program
-    //     }
-    //   } else {
-    //     timerStarted = false;     // the encoder value has changed, so reset the timer
-    //   }
-    // }
-    // lastEncoderVal = currentEncoderVal;
-    // // small delay make sure the loop doesn't run so fast as to get multiple readings at the same encoder
-    // // position if they motor hasn't actually stopped spinning
-    // delay(1); 
-  // }
 }
 
-// uses bit shifting to debounce a button
+
+
+
+
 bool debounceSwitch() {
   static bool triggered = false, firstClose = true;
   static uint16_t triggeredTime = 0;
@@ -591,17 +602,71 @@ int16_t getGearboxAngle(bool useAnalogRead = false) {  // Changed return type to
 
 
 
-// Convert arm encoder position (0-1024) to radial distance (0-100mm) (outer edge = 0, center of plate = 100mm)
-inline int16_t encoderToDistance(int16_t position) {
-    if (position < 0 || position > 1024) return 0;
-    return ((int32_t)position * 26) >> 8;
+// // Convert arm encoder position (0-1024) to radial distance (0-100mm) (outer edge = 0, center of plate = 100mm)
+// inline int16_t encoderToDistance(int16_t position) {
+//     if (position < 0 || position > 1024) return 0;
+//     return ((int32_t)position * 26) >> 8;
+// }
+
+// // Convert arm radial distance (0-100mm) to encoder position (0-1024)
+// inline int16_t distanceToEncoder(int16_t distance) {
+//     if (distance < 0 || distance > 100) return 0;
+//     return ((int32_t)distance * 10);
+// }
+
+
+int16_t armDistanceToAngle(int16_t distance) {
+  // This is only accurate for input distances ranging from 0 to 100mm.
+  // Beyond this point the mechanism itself is non-linear.
+
+  // Multiply by 501 (5.01 * 100) for fixed-point arithmetic
+  // Break into 501 = 512 - 11 for efficient computation using shifts
+  int32_t temp = distance;  // Use 32-bit for intermediate calculation
+  
+  // Multiply by 512 using left shift (2^9 = 512)
+  int32_t angle = temp << 9;
+  
+  // Subtract 11 * x
+  angle -= temp * 11;
+  
+  // Divide by 100 to remove fixed-point scaling
+  // Use combination of shifts and division for better efficiency
+  // First shift right by 2 (divide by 4) then divide by 25
+  angle = (angle >> 2) / 25;
+  
+  // found to be unneccessary - Add offset of 507
+  // angle += 507;
+  
+  return (int16_t)angle;
 }
 
-// Convert arm radial distance (0-100mm) to encoder position (0-1024)
-inline int16_t distanceToEncoder(int16_t distance) {
-    if (distance < 0 || distance > 100) return 0;
-    return ((int32_t)distance * 10);
+
+
+int16_t armAngleToDistance(int16_t angle) {
+  // This is only accurate for input angles ranging from 0 to 512 encoder counts.
+  // Beyond this point the mechanism itself is non-linear.
+
+  // Multiply by 20 (0.2 * 100) for fixed-point arithmetic
+  // Use 16 + 4 for efficient computation using shifts
+  int32_t temp = angle;  // Use 32-bit for intermediate calculation
+  
+  // Multiply temp by (16 + 4) using left shifts and addition
+  int32_t distance = (temp << 4) + (temp << 2);
+
+  // Divide by 100 to remove fixed-point scaling
+  // Use combination of shifts and division for better efficiency
+  // First shift right by 2 (divide by 4) then divide by 25
+  distance = (distance >> 2) / 25;
+  
+  // found to be unneccessary - Add offset of 101
+  // distance += 101;
+  
+  return (int16_t)distance;
 }
+
+
+
+
 
 
 
