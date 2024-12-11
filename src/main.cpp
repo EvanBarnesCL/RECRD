@@ -154,6 +154,7 @@ DRV8835 armMotor(ARM_SPEED_PIN, ARM_DIR_PIN, 160, false);
 
 
 void homeArm();
+bool debounceSwitch();
 int16_t getGearboxAngle(bool useAnalogRead = false);
 inline int16_t encoderToDistance(int16_t position);
 inline int16_t distanceToEncoder(int16_t distance);
@@ -203,12 +204,13 @@ EventDelay k_colorUpdateDelay;
 
 
 // **********************************************************************************
-// Potentiometers
+// Potentiometers and switch
 // **********************************************************************************
 
 constexpr uint8_t VOLUME_POT_PIN = A0;
 constexpr uint8_t MIDDLE_POT_PIN = A1;
 constexpr uint8_t BACK_POT_PIN = A2;
+constexpr uint8_t HOMING_SWITCH = 2;
 
 // **********************************************************************************
 // Mozzi stuff
@@ -245,9 +247,12 @@ void setup()
   tableEncoder.calibrate();
   armEncoder.begin();
   
+  // set up pin modes
+  pinMode(HOMING_SWITCH, INPUT_PULLUP);
+  
   // Start the homing process for the arm. First, move away from the homing stop for half
   // a second to be sure that we actually hit the stop later on.
-  armMotor.setSpeed(255);
+  // armMotor.setSpeed(255);
   delay(500);
   // Now home the arm. Note that this function depends on millis(), delay(), and analogRead(),
   // so it has to be called in setup() before changing the PWM clock rate for the motor control
@@ -502,34 +507,68 @@ void loop() {
 void homeArm() {
   uint16_t lastEncoderVal, currentEncoderVal, stopTimerStart, stopTimerCurrent;
   bool timerStarted = false, homed = false;
-  armMotor.setSpeed(-255);
-  while (!homed) {
-    currentEncoderVal = analogRead(ARM_ENC_PIN);
-    bool encoderStopped = (currentEncoderVal < lastEncoderVal + 2) && (currentEncoderVal > lastEncoderVal - 2);
-    Serial.println(encoderStopped ? "true" : "false");
-    if (!timerStarted) {
-      if (encoderStopped) {
-        timerStarted = true;
-        stopTimerStart = millis();
-      }
-    } else {
-      stopTimerCurrent = millis();
-      if (encoderStopped) {
-        if (stopTimerCurrent - stopTimerStart > 500) {
-          Serial.println("finished homing");
-          homed = true;   // homing condition complete, return to main program
-        }
-      } else {
-        timerStarted = false;     // the encoder value has changed, so reset the timer
-      }
-    }
-    lastEncoderVal = currentEncoderVal;
-    // small delay make sure the loop doesn't run so fast as to get multiple readings at the same encoder
-    // position if they motor hasn't actually stopped spinning
-    delay(1); 
+  bool switchPressed = false;
+  // first check to see if we're starting homing with the switch already pressed
+  if (digitalRead(HOMING_SWITCH) == 0) {
+    armMotor.setSpeed(255);
+    delay(1000);
+    armMotor.setSpeed(0);
+    delay(200);
   }
+
+  armMotor.setSpeed(-255);
+  while (!switchPressed) {
+    switchPressed = debounceSwitch();
+  }
+  armMotor.setSpeed(0);
+  while (true);
+
+  // while (!homed) {
+    // currentEncoderVal = analogRead(ARM_ENC_PIN);
+    // bool encoderStopped = (currentEncoderVal < lastEncoderVal + 2) && (currentEncoderVal > lastEncoderVal - 2);
+    // Serial.println(encoderStopped ? "true" : "false");
+    // if (!timerStarted) {
+    //   if (encoderStopped) {
+    //     timerStarted = true;
+    //     stopTimerStart = millis();
+    //   }
+    // } else {
+    //   stopTimerCurrent = millis();
+    //   if (encoderStopped) {
+    //     if (stopTimerCurrent - stopTimerStart > 500) {
+    //       Serial.println("finished homing");
+    //       homed = true;   // homing condition complete, return to main program
+    //     }
+    //   } else {
+    //     timerStarted = false;     // the encoder value has changed, so reset the timer
+    //   }
+    // }
+    // lastEncoderVal = currentEncoderVal;
+    // // small delay make sure the loop doesn't run so fast as to get multiple readings at the same encoder
+    // // position if they motor hasn't actually stopped spinning
+    // delay(1); 
+  // }
 }
 
+// uses bit shifting to debounce a button
+bool debounceSwitch() {
+  static bool triggered = false, firstClose = true;
+  static uint16_t triggeredTime = 0;
+  triggered = digitalRead(HOMING_SWITCH) == 0 ? true : false;
+  if (triggered && firstClose) {
+    triggeredTime = millis();
+    firstClose = false;
+  } else if (triggered && millis() - triggeredTime > 5) {
+    firstClose = true;
+    triggered = false;
+    return true;
+  }
+  return false;
+
+  // static uint16_t buttonState = 0;
+  // buttonState = (buttonState<<1) | digitalRead(HOMING_SWITCH);
+  // return (buttonState == 0xFFF0);
+}
 
 
 int16_t getGearboxAngle(bool useAnalogRead = false) {  // Changed return type to int16_t
