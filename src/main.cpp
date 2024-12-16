@@ -316,6 +316,8 @@ void updateControl() {
   bool newColorData = false;
   static bool reversed = false;
   static bool initializeControl = true;
+  
+  int16_t currentArmPosition = armAngleToDistance(armEncoder.getCumulativePosition());
 
   #pragma region controlInitializationRoutine
   // this will run for the first iteration to prime the mozziAnalogRead buffers.
@@ -333,15 +335,15 @@ void updateControl() {
     mozziAnalogRead<10>(VOLUME_POT_PIN);
     mozziAnalogRead<10>(MIDDLE_POT_PIN);
     mozziAnalogRead<10>(BACK_POT_PIN);
-    armMotor.setSpeed(-100);
-    // bring the color sensor over the edge of the table
 
-    int16_t currentArmPosition = armAngleToDistance(armEncoder.getCumulativePosition());
     Serial.print(currentArmPosition);
     Serial.print("   measured: ");
     Serial.print(armEncoder.getCumulativePosition());
     Serial.print("   calculated: ");
     Serial.println(armDistanceToAngle(currentArmPosition));
+    
+    armMotor.setSpeed(-255);
+    // bring the color sensor over the edge of the table
 
     if (currentArmPosition <= 70) {
       armMotor.setSpeed(0);
@@ -349,7 +351,9 @@ void updateControl() {
       // turn on the LED to illuminate the scene for the color sensor
       digitalWrite(LED_PIN, HIGH);
       // now prime buffer for the values for all 5 color sensor channels
+      Serial.println("here");
       for (int i = 0; i < 10; ) {
+        Serial.print("here now "); Serial.println(i);
         if (k_colorUpdateDelay.ready()) {
           newColorData = updateColorReadings(&colorData);
           k_colorUpdateDelay.start();
@@ -358,31 +362,24 @@ void updateControl() {
           i++;
         }
       }
-      tableMotor.setSpeed(255);
+      tableMotor.setSpeed(100);
     }
-
-
-    // if (encoderToDistance(getGearboxAngle()) > 30) {
-    //   armMotor.setSpeed(0);
-    //   initializeControl = false;
-    //   // turn on the LED to illuminate the scene for the color sensor
-    //   digitalWrite(LED_PIN, HIGH);
-    //   // now prime buffer for the values for all 5 color sensor channels
-    //   for (int i = 0; i < 10; ) {
-    //     if (k_colorUpdateDelay.ready()) {
-    //       newColorData = updateColorReadings(&colorData);
-    //       k_colorUpdateDelay.start();
-    //       // rotate to updating the next color channel - only one gets updated each loop
-    //       currentColorChannel = static_cast<ColorChannels>((static_cast<int>(currentColorChannel) + 1) % 5);
-    //       i++;
-    //     }
-    //   }
-    //   tableMotor.setSpeed(255);
-    // }
+    // break out of the updateControl loop early if initializeControl is still true
     return;
   }
   #pragma endregion controlInitializationRoutine
 
+  constexpr int16_t armSpeed = 10;
+  static int16_t armVector = -1 * armSpeed;
+  if (currentArmPosition < 5) {
+    armVector = armSpeed;
+  } else if (currentArmPosition > 71) {
+    armVector = -1 * armSpeed;
+  }
+
+  armMotor.setSpeed(armVector);
+  
+  
   // update colors as needed
   if (k_colorUpdateDelay.ready()) {
     newColorData = updateColorReadings(&colorData);
@@ -394,6 +391,9 @@ void updateControl() {
   }
   // rotate to updating the next color channel - only one gets updated each loop
   currentColorChannel = static_cast<ColorChannels>((static_cast<int>(currentColorChannel) + 1) % 5);
+
+
+
 
 
   /*
