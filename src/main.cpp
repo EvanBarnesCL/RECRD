@@ -156,13 +156,11 @@ DRV8835 armMotor(ARM_SPEED_PIN, ARM_DIR_PIN, 50, false);
 
 void homeArm();
 bool debounceSwitch();
-int16_t getGearboxAngle(bool useAnalogRead = false);
-// inline int16_t encoderToDistance(int16_t position);
-// inline int16_t distanceToEncoder(int16_t distance);
+
 
 int16_t armDistanceToAngle(int16_t distance);     // calculates arm encoder angle from linear position of color sensor
 int16_t armAngleToDistance(int16_t angle);        // calculates linear position of color sensor based on arm encoder angle
-
+bool initializationRoutine();                     // initialization routine to properly position the arm over the table and prime the color sensor
 
 int16_t armEncVal, tableEncVal, middlePotVal, backPotVal;
 
@@ -235,7 +233,8 @@ IntMap k_potToFreq(0, 1023, 80, 400);
 
 EventDelay k_printTimer;
 
-
+bool newColorData = false;      // flag to indicate that new color data is ready for use
+int16_t currentArmPosition = 0; // current arm position in millimeters from center of table
 
 
 // **********************************************************************************
@@ -246,16 +245,6 @@ void setup()
 {
   Serial.begin(115200);
   Serial.println("starting");
-
-  // int big = 1024, small = 256;
-  // int num = 512;
-  // int bigZeros = trailingZerosConst(big), smallZeros = trailingZerosConst(small);
-  // int diffZeros = bigZeros - smallZeros;
-  // int out = num >> diffZeros;
-  // Serial.println(out);
-  // while(1);
-
-
 
   // set up pin modes
   pinMode(HOMING_SWITCH, INPUT_PULLUP);
@@ -285,7 +274,7 @@ void setup()
   // Need to use fastest I2C possible to minimize latency for Mozzi.
   Wire.setClock(400000);
 
-  // Configure the color sensor
+  // Configure the color sensor.
   RGBCIR.Enable();
   RGBCIR.setGain(2);
   RGBCIR.setSensitivity(high_sens);
@@ -316,9 +305,11 @@ void setup()
 
   k_printTimer.set(100);
   k_colorUpdateDelay.set(50);
-  // tableMotor.setSpeed(250);
   
 }
+
+
+
 
 
 // **********************************************************************************
@@ -326,75 +317,33 @@ void setup()
 // **********************************************************************************
 
 void updateControl() {
-  bool newColorData = false;
-  static bool reversed = false;
+  newColorData = false;
   static bool initializeControl = true;
   
-  int16_t currentArmPosition = armAngleToDistance(armEncoder.getCumulativePosition());
+  currentArmPosition = armAngleToDistance(armEncoder.getCumulativePosition());
 
-  #pragma region controlInitializationRoutine
-  // this will run for the first iteration to prime the mozziAnalogRead buffers.
-  // this is necessary because of the way mozziAnalogRead asynchronously handles the ADC.
-  // This has to be done at the start of updateControl() rather than during setup() because
-  // mozziAnalogRead relies on interrupts generated during updateControl to actually start
-  // and gather analog readings. 
-  // This block also moves the color sensor to the starting position over the edge of the
-  // table and primes the buffer for the 5 color sensor channels as well. This way we can
-  // start the audio generation with clean sensor values, instead of values that start
-  // at 0 and drastically jump to the actual value. 
+  // if the system has just started, we need to initialize a few things during the updateControl loop
+  // prior to actually running the main sound and motor controls.
   if (initializeControl) {
-    tableEncoder.getCumulativePosition();
-    armEncoder.getCumulativePosition();
-    mozziAnalogRead<10>(VOLUME_POT_PIN);
-    mozziAnalogRead<10>(MIDDLE_POT_PIN);
-    mozziAnalogRead<10>(BACK_POT_PIN);
-
-    Serial.print(currentArmPosition);
-    Serial.print("   measured: ");
-    Serial.print(armEncoder.getCumulativePosition());
-    Serial.print("   calculated: ");
-    Serial.println(armDistanceToAngle(currentArmPosition));
-    
-    armMotor.setSpeed(-255);
-    // bring the color sensor over the edge of the table
-
-
-    if (currentArmPosition <= 70) {
-      armMotor.setSpeed(0);
-      initializeControl = false;
-      // turn on the LED to illuminate the scene for the color sensor
-      digitalWrite(LED_PIN, HIGH);
-      // now prime buffer for the values for all 5 color sensor channels
-      Serial.println("here");
-      for (int i = 0; i < 10; ) {
-        Serial.print("here now "); Serial.println(i);
-        if (k_colorUpdateDelay.ready()) {
-          newColorData = updateColorReadings(&colorData);
-          k_colorUpdateDelay.start();
-          // rotate to updating the next color channel - only one gets updated each loop
-          currentColorChannel = static_cast<ColorChannels>((static_cast<int>(currentColorChannel) + 1) % 5);
-          i++;
-        }
-      }
-      tableMotor.setSpeed(100);
-    }
-    // break out of the updateControl loop early if initializeControl is still true
-    return;
+    initializeControl = initializationRoutine();
+    return;     // break out of the updateControl loop early if initializeControl is still true
   }
-  #pragma endregion controlInitializationRoutine
+  
+  
+  // set the speed the arm will move at for the test pattern
+  constexpr int16_t armSpeed = 0;
 
-  constexpr int16_t armSpeed = 10;
+  // as a test pattern, move the arm in and out from edge to center and back
   static int16_t armVector = -1 * armSpeed;
   if (currentArmPosition < 5) {
     armVector = armSpeed;
   } else if (currentArmPosition > 71) {
     armVector = -1 * armSpeed;
   }
-
   armMotor.setSpeed(armVector);
   
   
-  // update colors as needed
+  // update colors as needed (update interval determined by k_colorUpdateDelay)
   if (k_colorUpdateDelay.ready()) {
     newColorData = updateColorReadings(&colorData);
     k_colorUpdateDelay.start();
@@ -403,113 +352,18 @@ void updateControl() {
   if (newColorData) {
     printColorData();
   }
-  // rotate to updating the next color channel - only one gets updated each loop
+  // rotate to updating the next color channel - only one gets updated each loop.
+  // this minimizes time spent in the updateControl loop waiting for color data. 
+  // updateControl needs to run as quickly as possible, which is why I built it to do this.
   currentColorChannel = static_cast<ColorChannels>((static_cast<int>(currentColorChannel) + 1) % 5);
 
-
-
-
-
-  /*
-  static int16_t lastTableRevs = 0;
-  static int8_t armTargetPos = 30;
-  static int8_t armDir = 1;
-
-  tableCumulativePosition = tableEncoder.getCumulativePosition();
-  int16_t tableRevolutions = tableEncoder.getRevolutions();
-  tableEncVal = tableEncoder.getAngle();
-
-
-  armCumulativePosition = armEncoder.getCumulativePosition();
-  int16_t armRevolutions = armEncoder.getRevolutions();
-  armEncVal = armEncoder.getAngle();
-  
-  int16_t cycloidalAngle = getGearboxAngle();
-  int16_t linearPosition = encoderToDistance(cycloidalAngle);  
-
-  if (lastTableRevs != tableRevolutions) {
-    if (armDir > 0) {
-      if (linearPosition < 60) {
-        armTargetPos += 5;
-      } else {
-        armDir = -1;
-        armTargetPos -=5;
-      }
-    } else if (armDir < 0) {
-      if (linearPosition > 30) {
-        armTargetPos -=5;
-      } else {
-        armDir = 1;
-        armTargetPos +=5;
-      }
-    }
-    lastTableRevs = tableRevolutions;
-  } 
-
-  
-  if (armTargetPos > linearPosition) {
-    // Serial.println("increasing");
-    armMotor.setSpeed(1);
-  } else if (armTargetPos < linearPosition) {
-    // Serial.println("decreasing");
-    armMotor.setSpeed(-1);
-  } else {
-    // Serial.println("stopped");
-    armMotor.setSpeed(0);
-  }
-  */
-
-  // if (tableRevolutions == 0 && reversed) reversed = false;
-  
-  // if (tableRevolutions > 1 && !reversed) {
-  //   tableMotor.setSpeed(tableMotor.getSpeedCommand() * -1);
-  //   reversed = true;
-  // }
-
-  // if (tableRevolutions < -1 && !reversed) {
-  //   tableMotor.setSpeed(tableMotor.getSpeedCommand() * -1);
-  //   reversed = true;
-  // }
-
-  
+  // update the potentiometer values
   globalGain = k_GlobalGainMap(mozziAnalogRead<8>(VOLUME_POT_PIN));
   middlePotVal = mozziAnalogRead<10>(MIDDLE_POT_PIN);
   backPotVal = mozziAnalogRead<10>(BACK_POT_PIN);
 
-  // if (k_printTimer.ready()) {
-  //   // Combine the values into a single string with labels and print to the serial monitor
-  //   String output;
-  //   output += "  ";
-  //   output += "T_REV: " + String(tableRevolutions) + "  " +
-  //             "T_ANGLE: " + String(tableEncVal) + "  " +
-  //             "Table cumulative position: " + String(tableCumulativePosition) + "  " +
-  //             "A_REV: " + String(armRevolutions) + "  " +
-  //             "A_ENC: " + String(armEncVal) + "  " +
-  //             "Arm cumulative position: " + String(armCumulativePosition) + "  " +
-  //             "F_PIN: " + String(globalGain) + "  " +
-  //             "M_PIN: " + String(middlePotVal) + "  " +
-  //             "B_PIN: " + String(backPotVal);
-  //   // Serial.println(output);
-  //   k_printTimer.start();
-  // }
-
-
-  // float vibrato; 
-  // kVib.setFreq(static_cast<float>(k_redChannelVibMap(colorData.red)));
-  // vibrato = depth * kVib.next();
-  // vibrato = depth * .5 * kVib.next();
-  // vibrato = depth * .33 * kVib.next();
-
-
-  // static float redFrequency = static_cast<float>(k_redChannelVibMap(colorData.red));
-  // redFrequency = 0.99 * redFrequency + 0.01 * static_cast<float>(k_redChannelVibMap(colorData.red));
-  // aSin.setFreq(redFrequency);
-
+  // finally, actually change the sound being generated based on the various controls
   aSin.setFreq(static_cast<float>(k_redChannelVibMap(colorData.red >> 1)));
-
-  // static int i = 0;
-  // aSin.setFreq(static_cast<float>((100 + i) % 1000));
-  // i += 10;
 
 }
 
@@ -523,7 +377,17 @@ void updateControl() {
 // **********************************************************************************
 
 AudioOutput_t updateAudio() {
-  return MonoOutput::from8Bit((aSin.next() * globalGain)>>8);             // 8 bit sine osc * 8 bit globalGain makes 16 bits total (2^8 * 2^8 = 2^(8+8) = 2^16)
+  // 8 bit sine osc * 8 bit globalGain makes 16 bits total (2^8 * 2^8 = 2^(8+8) = 2^16). 
+  // We need to generate audio output, and Mozzi has a few functions for doing that.
+  // One is MonoOutput::from8Bit. If we want to use that, we have to bring everything back
+  // into 8 bit from 16 by shifting right by 8 places (divide by 2^8) to bring this back to 8 bit.
+  // that would work like the following:
+  // return MonoOutput::from8Bit((aSin.next() * globalGain)>>8);             
+
+  // Or, there's MonoOutput::from16Bit, which we can just use directly without shifting:
+  return MonoOutput::from16Bit((aSin.next() * globalGain));
+
+  // there's also stereo output, which I haven't played with yet:
   // return StereoOutput::from8Bit((aSin.next() * globalGain)>>8);
 }
 
@@ -537,10 +401,6 @@ AudioOutput_t updateAudio() {
 void loop() {
   // synthesize new audio for Mozzi
   audioHook();
-
-  
-  
-  
 }
 
 
@@ -598,44 +458,7 @@ bool debounceSwitch() {
     return true;
   }
   return false;
-
-  // static uint16_t buttonState = 0;
-  // buttonState = (buttonState<<1) | digitalRead(HOMING_SWITCH);
-  // return (buttonState == 0xFFF0);
 }
-
-
-int16_t getGearboxAngle(bool useAnalogRead = false) {  // Changed return type to int16_t
-    // Get cumulative position from encoder
-    int32_t motorPosition;
-    if (useAnalogRead) {
-      motorPosition = analogRead(ARM_ENC_PIN);
-      // Serial.print("enc: "); Serial.print(motorPosition);
-    } else {
-      motorPosition = armEncoder.getCumulativePosition(); 
-    }
-    
-    // Get position within one full output rotation, preserving sign
-    motorPosition = (motorPosition % (30 * 1024));
-    // Serial.print("    motor pos: "); Serial.println(motorPosition);
-    
-    // Scale to -1024 to +1024 range (for ±180 degrees)
-    return (int16_t)((motorPosition * 2048L) / (30 * 1024));
-}
-
-
-
-// // Convert arm encoder position (0-1024) to radial distance (0-100mm) (outer edge = 0, center of plate = 100mm)
-// inline int16_t encoderToDistance(int16_t position) {
-//     if (position < 0 || position > 1024) return 0;
-//     return ((int32_t)position * 26) >> 8;
-// }
-
-// // Convert arm radial distance (0-100mm) to encoder position (0-1024)
-// inline int16_t distanceToEncoder(int16_t distance) {
-//     if (distance < 0 || distance > 100) return 0;
-//     return ((int32_t)distance * 10);
-// }
 
 
 int16_t armDistanceToAngle(int16_t distance) {
@@ -686,7 +509,6 @@ int16_t armAngleToDistance(int16_t angle) {
   
   return (int16_t)distance;
 }
-
 
 
 
@@ -761,4 +583,58 @@ void printColorData() {
     Serial.print("    clear - combined = "); Serial.print(diff);
   } 
   Serial.println();
+}
+
+
+
+
+// this will run for the first iteration to prime the mozziAnalogRead buffers.
+// this is necessary because of the way mozziAnalogRead asynchronously handles the ADC.
+// This has to be done at the start of updateControl() rather than during setup() because
+// mozziAnalogRead relies on interrupts generated during updateControl to actually start
+// and gather analog readings. 
+// This block also moves the color sensor to the starting position over the edge of the
+// table and primes the buffer for the 5 color sensor channels as well. This way we can
+// start the audio generation with clean sensor values, instead of values that start
+// at 0 and drastically jump to the actual value. 
+bool initializationRoutine() {
+  tableEncoder.getCumulativePosition();
+  armEncoder.getCumulativePosition();
+  mozziAnalogRead<10>(VOLUME_POT_PIN);
+  mozziAnalogRead<10>(MIDDLE_POT_PIN);
+  mozziAnalogRead<10>(BACK_POT_PIN);
+
+  Serial.print(currentArmPosition);
+  Serial.print("   measured: ");
+  Serial.print(armEncoder.getCumulativePosition());
+  Serial.print("   calculated: ");
+  Serial.println(armDistanceToAngle(currentArmPosition));
+  
+  armMotor.setSpeed(-255);
+  // bring the color sensor over the edge of the table
+
+
+  if (currentArmPosition <= 70) {
+    armMotor.setSpeed(0);
+    // turn on the LED to illuminate the scene for the color sensor
+    digitalWrite(LED_PIN, HIGH);
+
+    // now prime buffer for the values for all 5 color sensor channels
+    Serial.println("here");
+    for (int i = 0; i < 10; ) {
+      Serial.print("here now "); Serial.println(i);
+      if (k_colorUpdateDelay.ready()) {
+        newColorData = updateColorReadings(&colorData);
+        k_colorUpdateDelay.start();
+        // rotate to updating the next color channel - only one gets updated each loop
+        currentColorChannel = static_cast<ColorChannels>((static_cast<int>(currentColorChannel) + 1) % 5);
+        i++;
+      }
+    }
+    // start the table spinning
+    tableMotor.setSpeed(100);
+    return false;   // initialization is finished, so we'll stop running this routine
+  }
+  // initialization isn't finished yet, so return true
+  return true;
 }
