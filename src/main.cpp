@@ -18,6 +18,7 @@
 #include <tables/sin2048_int8.h>
 #include <IntMap.h>
 #include <EventDelay.h>
+#include <mozzi_utils.h>
 
 
 // **********************************************************************************
@@ -229,7 +230,8 @@ float vibratoFreq = 221.0;
 constexpr uint8_t MAX_GLOBAL_GAIN = 64;   // maximum global gain value
 uint8_t globalGain = 12;           // global gain value for changing total volume output. non-linear changes in volume
 IntMap k_GlobalGainMap(0, 255, 0, MAX_GLOBAL_GAIN);     // maps potentiometer value to be within 0-MAX_GLOBAL_GAIN so you don't blow your ears out
-IntMap k_redChannelVibMap(0, 65535, 80, 250);
+IntMap k_redChannelVibMap(0, 32767, 80, 2000);       // signed int, max value of 32767
+IntMap k_potToFreq(0, 1023, 80, 400);
 
 EventDelay k_printTimer;
 
@@ -244,6 +246,16 @@ void setup()
 {
   Serial.begin(115200);
   Serial.println("starting");
+
+  // int big = 1024, small = 256;
+  // int num = 512;
+  // int bigZeros = trailingZerosConst(big), smallZeros = trailingZerosConst(small);
+  // int diffZeros = bigZeros - smallZeros;
+  // int out = num >> diffZeros;
+  // Serial.println(out);
+  // while(1);
+
+
 
   // set up pin modes
   pinMode(HOMING_SWITCH, INPUT_PULLUP);
@@ -305,6 +317,7 @@ void setup()
   k_printTimer.set(100);
   k_colorUpdateDelay.set(50);
   // tableMotor.setSpeed(250);
+  
 }
 
 
@@ -344,6 +357,7 @@ void updateControl() {
     
     armMotor.setSpeed(-255);
     // bring the color sensor over the edge of the table
+
 
     if (currentArmPosition <= 70) {
       armMotor.setSpeed(0);
@@ -456,7 +470,7 @@ void updateControl() {
   //   tableMotor.setSpeed(tableMotor.getSpeedCommand() * -1);
   //   reversed = true;
   // }
-  
+
   
   globalGain = k_GlobalGainMap(mozziAnalogRead<8>(VOLUME_POT_PIN));
   middlePotVal = mozziAnalogRead<10>(MIDDLE_POT_PIN);
@@ -485,8 +499,17 @@ void updateControl() {
   // vibrato = depth * kVib.next();
   // vibrato = depth * .5 * kVib.next();
   // vibrato = depth * .33 * kVib.next();
-  aSin.setFreq(static_cast<float>(k_redChannelVibMap(colorData.red)));
 
+
+  // static float redFrequency = static_cast<float>(k_redChannelVibMap(colorData.red));
+  // redFrequency = 0.99 * redFrequency + 0.01 * static_cast<float>(k_redChannelVibMap(colorData.red));
+  // aSin.setFreq(redFrequency);
+
+  aSin.setFreq(static_cast<float>(k_redChannelVibMap(colorData.red >> 1)));
+
+  // static int i = 0;
+  // aSin.setFreq(static_cast<float>((100 + i) % 1000));
+  // i += 10;
 
 }
 
