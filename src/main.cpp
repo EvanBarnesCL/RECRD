@@ -562,14 +562,14 @@ void homeArm() {
   }
 
   // start the arm motor spinning
-  armMotor.setSpeed(-255);
+  armMotor.setSpeed(255);
   // wait for the switch to be pressed
   while (!debounceSwitch()) {
   }
 
   // read the current angle on the encoder
   uint16_t switchActivatedAngle = analogRead(ARM_ENC_PIN), homeAngle = 0;
-  uint16_t switchOffsetAngle = 75;            // angular distance of the switch activation position from the desired home position
+  constexpr uint16_t switchOffsetAngle = 15;            // angular distance of the switch activation position from the desired home position
   // set the target home position angle
   homeAngle = switchActivatedAngle - switchOffsetAngle;    
   homeAngle &= 1023;          // make sure this value wraps around 0 point correctly
