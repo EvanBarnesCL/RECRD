@@ -161,7 +161,8 @@ bool debounceSwitch();
 int16_t armDistanceToAngle(int16_t distance);     // calculates arm encoder angle from linear position of color sensor
 int16_t armAngleToDistance(int16_t angle);        // calculates linear position of color sensor based on arm encoder angle
 bool initializationRoutine();                     // initialization routine to properly position the arm over the table and prime the color sensor
-uint8_t noteToMIDINote(char noteName[]);          // convert note names to MIDI note numbers (e.g., F#2 -> 42)
+uint8_t noteNameToMIDINote(char noteName[]);          // convert note names to MIDI note numbers (e.g., F#2 -> 42)
+const char* MIDINoteToNoteName(uint8_t note);     // convert MIDI note to note name (e.g., 42 -> F#2)
 
 int16_t armEncVal, tableEncVal, middlePotVal, backPotVal;
 
@@ -644,7 +645,7 @@ bool initializationRoutine() {
 
 // this returns the MIDI note number for any note from C-1 to G9 (MIDI notes 0 through 127).
 // Pass the note name as a string into the parameter. E.g., "D#-1" returns 3, or "F#2" returns 42.
-uint8_t noteToMIDINote(char noteName[]) {
+uint8_t noteNameToMIDINote(char noteName[]) {
   // Arrays for natural and sharp notes
   const char* naturalNotes[7] = {"C", "D", "E", "F", "G", "A", "B"};
   const uint8_t naturalNoteBases[7] = {0, 2, 4, 5, 7, 9, 11};
@@ -690,4 +691,29 @@ uint8_t noteToMIDINote(char noteName[]) {
   }
   // Calculate the MIDI note number
   return (octaveNumber + 1) * OCTAVE + noteBaseIndex;
+}
+
+
+
+
+// Converts a MIDI note number into a string (const char*) note name. E.g., 42 -> F#2
+const char* MIDINoteToNoteName(uint8_t note) {
+  // Note names for one octave
+  const char* noteNames[] = {
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
+  };
+
+  if (note > 127) {
+    return "Invalid"; // Return an error string for invalid MIDI numbers
+  }
+
+  // Determine octave
+  int8_t octave = (note / 12) - 1;
+  uint8_t noteIndex = note % 12;
+
+  // Allocate a static buffer to store the note string
+  static char noteStr[5]; // Max length: "A#-1" + null terminator = 5 bytes
+  snprintf(noteStr, sizeof(noteStr), "%s%d", noteNames[noteIndex], octave);
+
+  return noteStr;
 }
