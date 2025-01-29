@@ -773,7 +773,7 @@ bool initializationRoutine() {
       }
     }
     // start the table spinning
-    tableMotor.setSpeed(100);
+    tableMotor.setSpeed(255);
     return false;   // initialization is finished, so we'll stop running this routine
   }
   // initialization isn't finished yet, so return true
