@@ -3,6 +3,8 @@
 // the use of both of those any time Mozzi is running anyway, so this might be fine! So far this hasn't affected
 // my very basic Mozzi sketch.
 // if this is defined, the PWM rate for Timer 0 is 62.5kHz, which removes audible PWM noise from driving motors.
+
+
 #define USE_FAST_PWM
 
 #define USE_MOZZI_ANALOG_READ
