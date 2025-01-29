@@ -16,9 +16,13 @@
 #include <Mozzi.h>
 #include <Oscil.h>
 #include <tables/sin2048_int8.h>
+#include <tables/cos8192_int8.h>
 #include <IntMap.h>
 #include <EventDelay.h>
 #include <mozzi_utils.h>
+#include <mozzi_rand.h>
+#include <mozzi_midi.h>
+#include <FixMath.h>
 
 
 // **********************************************************************************
@@ -239,6 +243,16 @@ bool newColorData = false;      // flag to indicate that new color data is ready
 int16_t currentArmPosition = 0; // current arm position in millimeters from center of table
 
 
+// harmonics
+Oscil<COS8192_NUM_CELLS, MOZZI_AUDIO_RATE> aCos1(COS8192_DATA);
+Oscil<COS8192_NUM_CELLS, MOZZI_AUDIO_RATE> aCos2(COS8192_DATA);
+Oscil<COS8192_NUM_CELLS, MOZZI_AUDIO_RATE> aCos3(COS8192_DATA);
+Oscil<COS8192_NUM_CELLS, MOZZI_AUDIO_RATE> aCos4(COS8192_DATA);
+// Oscil<COS8192_NUM_CELLS, MOZZI_AUDIO_RATE> aCos5(COS8192_DATA);
+
+// base pitch frequencies in Q16n16 fixed int format (for speed later)
+UFix<12,15> f1,f2,f3,f4;
+
 // **********************************************************************************
 // Setup
 // **********************************************************************************
@@ -305,6 +319,22 @@ void setup()
   kVib.setFreq(vibratoFreq);
   startMozzi(MOZZI_CONTROL_RATE);
 
+  // now that Mozzi is started, select base frequencies using mtof (midi to freq) and fixed-point numbers
+  // this should be an E diminished 7 sus 2 chord
+  f1 = mtof(UFix<7,0>(noteNameToMIDINote("E3")));
+  f2 = mtof(UFix<7,0>(noteNameToMIDINote("F#4")));
+  f3 = mtof(UFix<7,0>(noteNameToMIDINote("B3")));
+  f4 = mtof(UFix<7,0>(noteNameToMIDINote("D#4")));
+  // f5 = mtof(UFix<7,0>(67));
+
+  // set Oscils with chosen frequencies
+  aCos1.setFreq(f1);
+  aCos2.setFreq(f2);
+  aCos3.setFreq(f3);
+  aCos4.setFreq(f4);
+  // aCos5.setFreq(f5);
+
+  // finally, start the timers
   k_printTimer.set(100);
   k_colorUpdateDelay.set(50);
   
@@ -333,7 +363,7 @@ void updateControl() {
   
   
   // set the speed the arm will move at for the test pattern
-  constexpr int16_t armSpeed = 0;
+  constexpr int16_t armSpeed = 100;
 
   // as a test pattern, move the arm in and out from edge to center and back
   static int16_t armVector = -1 * armSpeed;
@@ -365,7 +395,7 @@ void updateControl() {
   backPotVal = mozziAnalogRead<10>(BACK_POT_PIN);
 
   // finally, actually change the sound being generated based on the various controls
-  aSin.setFreq(static_cast<float>(k_redChannelVibMap(colorData.red >> 1)));
+  // aSin.setFreq(static_cast<float>(k_redChannelVibMap(colorData.red >> 1)));
 
 }
 
@@ -387,10 +417,24 @@ AudioOutput_t updateAudio() {
   // return MonoOutput::from8Bit((aSin.next() * globalGain)>>8);             
 
   // Or, there's MonoOutput::from16Bit, which we can just use directly without shifting:
-  return MonoOutput::from16Bit((aSin.next() * globalGain));
+  // return MonoOutput::from16Bit((aSin.next() * globalGain));
 
-  // there's also stereo output, which I haven't played with yet:
-  // return StereoOutput::from8Bit((aSin.next() * globalGain)>>8);
+  /*
+  This is letting Mozzi compute the number of bits for you.
+  The syntax is a bit more cumbersome but FixMath will be
+  clever enough to figure out the exact number of bits needed
+  to create asig without any overflow, but no more.
+  This number of bits will be used by Mozzi for right/left shifting
+  the number to match the capability of the system.
+*/
+  auto asig = 
+  toSFraction(aCos1.next()) +
+  toSFraction(aCos2.next()) +
+  toSFraction(aCos3.next()) +
+  toSFraction(aCos4.next());
+  // toSFraction(aCos6.next()) + toSFraction(aCos6b.next()); /* +
+// toSFraction(aCos7.next()) + toSFraction(aCos7b.next()) +*/
+  return MonoOutput::fromSFix(asig);
 }
 
 
