@@ -167,8 +167,9 @@ bool debounceSwitch();
 int16_t armDistanceToAngle(int16_t distance);     // calculates arm encoder angle from linear position of color sensor
 int16_t armAngleToDistance(int16_t angle);        // calculates linear position of color sensor based on arm encoder angle
 bool initializationRoutine();                     // initialization routine to properly position the arm over the table and prime the color sensor
-uint8_t noteNameToMIDINote(char noteName[]);          // convert note names to MIDI note numbers (e.g., F#2 -> 42)
+uint8_t noteNameToMIDINote(const char* noteName);          // convert note names to MIDI note numbers (e.g., F#2 -> 42)
 const char* MIDINoteToNoteName(uint8_t note);     // convert MIDI note to note name (e.g., 42 -> F#2)
+
 
 int16_t armEncVal, tableEncVal, middlePotVal, backPotVal;
 
@@ -236,14 +237,19 @@ float vibratoFreq = 221.0;
 constexpr uint8_t MAX_GLOBAL_GAIN = 64;   // maximum global gain value
 uint8_t globalGain = 12;           // global gain value for changing total volume output. non-linear changes in volume
 IntMap k_GlobalGainMap(0, 255, 0, MAX_GLOBAL_GAIN);     // maps potentiometer value to be within 0-MAX_GLOBAL_GAIN so you don't blow your ears out
-IntMap k_redChannelVibMap(0, 32767, 80, 2000);       // signed int, max value of 32767
-IntMap k_potToFreq(0, 1023, 80, 400);
 
-EventDelay k_printTimer;
+
+EventDelay k_printTimer, k_chordChangeTimer;
 
 bool newColorData = false;      // flag to indicate that new color data is ready for use
 int16_t currentArmPosition = 0; // current arm position in millimeters from center of table
 
+
+
+
+// **********************************************************************************
+// Music stuff
+// **********************************************************************************
 
 // harmonics
 Oscil<COS8192_NUM_CELLS, MOZZI_AUDIO_RATE> aCos1(COS8192_DATA);
@@ -254,6 +260,53 @@ Oscil<COS8192_NUM_CELLS, MOZZI_AUDIO_RATE> aCos4(COS8192_DATA);
 
 // base pitch frequencies in Q16n16 fixed int format (for speed later)
 UFix<12,15> f1,f2,f3,f4;
+
+// an array of 4 pointers to const char* strings that define up to four notes in a chord
+struct Chord {
+  const char* notes[4];
+};
+
+// chord progression vi-I-IV-iii
+Chord Am = {"C3", "E3", "A3", " "};
+Chord Am7 = {"C3", "E3", "A3", "G4"};
+
+Chord C = {"E3," "G3", "C4", " "};
+Chord Cadd9 = {"E3," "G3", "C4", "D4"};
+
+Chord F = {"C3", "F3", "A3", " "};
+Chord Fm6 = {"C4", "F3", "G#3", "D4"};
+
+Chord Em = {"E3", "G3", "B3", " "};
+Chord Em7 = {"E3", "G3", "B3", "D4"};
+
+Chord chordProgression[4] = {Am, C, F, Em};
+Chord chordProgressionVaried[4] = {Am7, Cadd9, Fm6, Em7};
+Chord chordProgressionCombined[8] = {Am, Am7, C, Cadd9, F, Fm6, Em, Em7};     // might do a probabilistic version of this where it's like 75% the normal notes, 25% the augmented ones
+
+
+IntMap k_redChannelVibMap(0, 32767, 80, 2000);       // signed int, max value of 32767
+IntMap k_potToFreq(0, 1023, 80, 400);
+
+
+void convertArray_NoteNumbersToNames(const uint8_t midiNotes[], uint8_t numNotes, const char* noteNames[]);
+void convertArray_NoteNamesToNumbers(const char* noteNames[], uint8_t numNotes, uint8_t midiNotes[]);
+uint8_t snapToNearestNote(uint8_t inputValue, const uint8_t notes[], uint8_t numNotes);
+void setFreqsFromChord(const Chord& chord, UFix<12,15>& f1, UFix<12,15>& f2, UFix<12,15>& f3, UFix<12,15>& f4);
+const char* getNoteFromArpeggio(const char* notes[], uint8_t numNotes, uint8_t selector);
+
+
+
+
+const char* testArp[8] = {"C2", "E3", "A3", "G4", "C4", "F4", "G#4", "D5"};
+
+// going to tie this into the red color channel
+const uint8_t numNotesInScale = 15;
+const char* scale_EbPentatonicMinor[numNotesInScale] = {"D#2", "F#2", "G#2", "A#2", "C#3", "D#3", "F#3", "G#3", "A#3", "C#4", "D#4", "F#4", "G#4", "A#4", "C#5"};
+uint8_t scaleNumbers_EbPentatonicMinor[numNotesInScale];
+
+
+
+
 
 // **********************************************************************************
 // Setup
@@ -323,11 +376,18 @@ void setup()
 
   // now that Mozzi is started, select base frequencies using mtof (midi to freq) and fixed-point numbers
   // this should be an E diminished 7 sus 2 chord
-  f1 = mtof(UFix<7,0>(noteNameToMIDINote("E3")));
-  f2 = mtof(UFix<7,0>(noteNameToMIDINote("F#4")));
-  f3 = mtof(UFix<7,0>(noteNameToMIDINote("B3")));
-  f4 = mtof(UFix<7,0>(noteNameToMIDINote("D#4")));
-  // f5 = mtof(UFix<7,0>(67));
+  // f1 = mtof(UFix<7,0>(noteNameToMIDINote("E3")));
+  // f2 = mtof(UFix<7,0>(noteNameToMIDINote("F#4")));
+  // f3 = mtof(UFix<7,0>(noteNameToMIDINote("B3")));
+  // f4 = mtof(UFix<7,0>(noteNameToMIDINote("D#4")));
+
+  // get a chord from the chord progression
+  // f1 = mtof(UFix<7,0>(noteNameToMIDINote(chordProgressionVaried[0].notes[0])));
+  // f2 = mtof(UFix<7,0>(noteNameToMIDINote(chordProgressionVaried[0].notes[1])));
+  // f3 = mtof(UFix<7,0>(noteNameToMIDINote(chordProgressionVaried[0].notes[2])));
+  // f4 = mtof(UFix<7,0>(noteNameToMIDINote(chordProgressionVaried[0].notes[3])));
+
+  setFreqsFromChord(chordProgression[1], f1, f2, f3, f4);
 
   // set Oscils with chosen frequencies
   aCos1.setFreq(f1);
@@ -336,9 +396,15 @@ void setup()
   aCos4.setFreq(f4);
   // aCos5.setFreq(f5);
 
+  // the scaleNumers_EbPentatonicMinor array needs to be initialized
+  convertArray_NoteNamesToNumbers(scale_EbPentatonicMinor, numNotesInScale, scaleNumbers_EbPentatonicMinor);
+
+
   // finally, start the timers
   k_printTimer.set(100);
   k_colorUpdateDelay.set(50);
+  k_chordChangeTimer.set(500);
+  k_chordChangeTimer.start();
   
 }
 
@@ -353,6 +419,7 @@ void setup()
 void updateControl() {
   newColorData = false;
   static bool initializeControl = true;
+  static uint8_t chordIterator = 0;
   
   currentArmPosition = armAngleToDistance(armEncoder.getCumulativePosition());
 
@@ -365,7 +432,7 @@ void updateControl() {
   
   
   // set the speed the arm will move at for the test pattern
-  constexpr int16_t armSpeed = 100;
+  constexpr int16_t armSpeed = 0;
 
   // as a test pattern, move the arm in and out from edge to center and back
   static int16_t armVector = -1 * armSpeed;
@@ -398,6 +465,32 @@ void updateControl() {
 
   // finally, actually change the sound being generated based on the various controls
   // aSin.setFreq(static_cast<float>(k_redChannelVibMap(colorData.red >> 1)));
+
+  // if (k_chordChangeTimer.ready()) {
+  //   setFreqsFromChord(chordProgression[(++chordIterator)%4], f1, f2, f3, f4);
+  //   aCos1.setFreq(f1);
+  //   aCos2.setFreq(f2);
+  //   aCos3.setFreq(f3);
+  //   aCos4.setFreq(f4);
+  //   k_chordChangeTimer.start();
+  // }
+
+  // static uint8_t arpIterator = 0;
+  // if (k_chordChangeTimer.ready()) {
+  //   aCos1.setFreq(mtof(noteNameToMIDINote(getNoteFromArpeggio(testArp, 8, arpIterator))));
+  //   arpIterator = (++arpIterator) % 8;
+  //   aCos2.setFreq(0);
+  //   aCos3.setFreq(0);
+  //   aCos4.setFreq(0);
+  //   k_chordChangeTimer.start();
+  // }
+
+  // play with this bit shift number to see what value brings the color data into a good audible range
+  uint8_t downsampledRed = colorData.red >> 7;   
+  aCos1.setFreq(mtof(snapToNearestNote(downsampledRed, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
+  aCos2.setFreq(0);
+  aCos3.setFreq(0);
+  aCos4.setFreq(0);
 
 }
 
@@ -691,7 +784,7 @@ bool initializationRoutine() {
 
 // this returns the MIDI note number for any note from C-1 to G9 (MIDI notes 0 through 127).
 // Pass the note name as a string into the parameter. E.g., "D#-1" returns 3, or "F#2" returns 42.
-uint8_t noteNameToMIDINote(char noteName[]) {
+uint8_t noteNameToMIDINote(const char* noteName) {
   // Arrays for natural and sharp notes
   const char* naturalNotes[7] = {"C", "D", "E", "F", "G", "A", "B"};
   const uint8_t naturalNoteBases[7] = {0, 2, 4, 5, 7, 9, 11};
@@ -762,4 +855,83 @@ const char* MIDINoteToNoteName(uint8_t note) {
   snprintf(noteStr, sizeof(noteStr), "%s%d", noteNames[noteIndex], octave);
 
   return noteStr;
+}
+
+
+
+void setFreqsFromChord(const Chord& chord, UFix<12,15>& f1, UFix<12,15>& f2, UFix<12,15>& f3, UFix<12,15>& f4) {
+  uint8_t note = noteNameToMIDINote(chord.notes[0]);
+  if (note >= 0 && note < 128) {
+    f1 = mtof(UFix<7,0>(note));
+  } else {
+    f1 = 0;
+  }
+
+  note = noteNameToMIDINote(chord.notes[1]);
+  if (note >= 0 && note < 128) {
+    f2 = mtof(UFix<7,0>(note));
+  } else {
+    f2 = 0;
+  }
+
+  note = noteNameToMIDINote(chord.notes[2]);
+  if (note >= 0 && note < 128) {
+    f3 = mtof(UFix<7,0>(note));
+  } else {
+    f3 = 0;
+  }
+
+  note = noteNameToMIDINote(chord.notes[3]);
+  if (note >= 0 && note < 128) {
+    f4 = mtof(UFix<7,0>(note));
+  } else {
+    f4 = 0;
+  }
+}
+
+
+// pass in a list of notes and get back a single note, e.g.:
+// const char* arpeggio[] = {"A4", "C#2", "D5"};
+// const char* newNote = getNoteFromArpeggio(arpeggio, 3, 0);   // should result in newNote equaling "A4"
+const char* getNoteFromArpeggio(const char* notes[], uint8_t numNotes, uint8_t selector) {
+  if (selector < numNotes) {
+    return notes[selector];
+  } else {
+    return " ";
+  }
+}
+
+
+
+// takes an input value (range 0 to 127) and snaps it to the nearest note in a provided scale
+// pass the notes in as MIDI note numbers, not note names
+uint8_t snapToNearestNote(uint8_t inputValue, const uint8_t notes[], uint8_t numNotes) {
+  uint8_t minimumDistance = 255;  // The smallest distance found between inputValue and a MIDI note
+  uint8_t minDistanceNote = 0;    // The corresponding nearest MIDI note
+
+  // Iterate through the scale notes to find the nearest one
+  for (uint8_t i = 0; i < numNotes; i++) {
+    uint8_t distance = abs(inputValue - notes[i]);
+
+    if (distance < minimumDistance) {
+      minimumDistance = distance;
+      minDistanceNote = notes[i];
+    }
+  }
+
+  return minDistanceNote;
+}
+
+
+// convert an array of note names into an array of MIDI note numbers
+void convertArray_NoteNamesToNumbers(const char* noteNames[], uint8_t numNotes, uint8_t midiNotes[]) {
+  for (uint8_t i = 0; i < numNotes; i++) {
+    midiNotes[i] = noteNameToMIDINote(noteNames[i]);
+  }
+}
+
+void convertArray_NoteNumbersToNames(const uint8_t midiNotes[], uint8_t numNotes, const char* noteNames[]) {
+  for (uint8_t i = 0; i < numNotes; i++) {
+    noteNames[i] = MIDINoteToNoteName(midiNotes[i]);
+  }
 }
