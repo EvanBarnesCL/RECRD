@@ -161,6 +161,7 @@ bool debounceSwitch();
 int16_t armDistanceToAngle(int16_t distance);     // calculates arm encoder angle from linear position of color sensor
 int16_t armAngleToDistance(int16_t angle);        // calculates linear position of color sensor based on arm encoder angle
 bool initializationRoutine();                     // initialization routine to properly position the arm over the table and prime the color sensor
+uint8_t noteToMIDINote(char noteName[]);          // convert note names to MIDI note numbers (e.g., F#2 -> 42)
 
 int16_t armEncVal, tableEncVal, middlePotVal, backPotVal;
 
@@ -637,4 +638,56 @@ bool initializationRoutine() {
   }
   // initialization isn't finished yet, so return true
   return true;
+}
+
+
+
+// this returns the MIDI note number for any note from C-1 to G9 (MIDI notes 0 through 127).
+// Pass the note name as a string into the parameter. E.g., "D#-1" returns 3, or "F#2" returns 42.
+uint8_t noteToMIDINote(char noteName[]) {
+  // Arrays for natural and sharp notes
+  const char* naturalNotes[7] = {"C", "D", "E", "F", "G", "A", "B"};
+  const uint8_t naturalNoteBases[7] = {0, 2, 4, 5, 7, 9, 11};
+  const char* sharpNotes[5] = {"C", "D", "F", "G", "A"};
+  const uint8_t sharpNoteBases[5] = {1, 3, 6, 8, 10};
+
+  constexpr uint8_t OCTAVE = 12;
+
+  int8_t noteBaseIndex = -1;  // Base index for the note
+  int8_t octaveNumber = 0;    // Octave number
+
+  // Check if the note is sharp or natural
+  if (noteName[1] == '#') {
+    // Sharp note
+    for (int i = 0; i < 5; i++) {
+      if (noteName[0] == sharpNotes[i][0]) {
+        noteBaseIndex = sharpNoteBases[i];
+        break;
+      }
+    }
+    if (noteBaseIndex == -1 || (noteName[2] != '-' && !isdigit(noteName[2]))) return 255; // Invalid note
+    // Handle negative octave
+    if (noteName[2] == '-') {
+      octaveNumber = -1; // Convert char to int and make negative
+    } else {
+      octaveNumber = noteName[2] - '0'; // Convert char to int
+    }
+  } else {
+    // Natural note
+    for (int i = 0; i < 7; i++) {
+      if (noteName[0] == naturalNotes[i][0]) {
+        noteBaseIndex = naturalNoteBases[i];
+        break;
+      }
+    }
+    if (noteBaseIndex == -1 || (noteName[1] != '-' && !isdigit(noteName[1]))) return 255; // Invalid note
+    // Handle negative octave
+    if (noteName[1] == '-') {
+      octaveNumber = -(noteName[2] - '0'); // Convert char to int and make negative
+    } else {
+      octaveNumber = noteName[1] - '0'; // Convert char to int
+    }
+  }
+  // Calculate the MIDI note number
+  return (octaveNumber + 1) * OCTAVE + noteBaseIndex;
 }
