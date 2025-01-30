@@ -234,7 +234,7 @@ float depth = 5.0;
 float vibratoFreq = 221.0;
 
 // global gain controls
-constexpr uint8_t MAX_GLOBAL_GAIN = 64;   // maximum global gain value
+constexpr uint8_t MAX_GLOBAL_GAIN = 255;   // maximum global gain value
 uint8_t globalGain = 12;           // global gain value for changing total volume output. non-linear changes in volume
 IntMap k_GlobalGainMap(0, 255, 0, MAX_GLOBAL_GAIN);     // maps potentiometer value to be within 0-MAX_GLOBAL_GAIN so you don't blow your ears out
 
@@ -487,10 +487,12 @@ void updateControl() {
 
   // play with this bit shift number to see what value brings the color data into a good audible range
   uint8_t downsampledRed = colorData.red >> 7;   
+  uint8_t downsampledGreen = colorData.green >> 8;
+  uint8_t downsampledBlue = colorData.blue >> 7;
   aCos1.setFreq(mtof(snapToNearestNote(downsampledRed, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
-  aCos2.setFreq(0);
-  aCos3.setFreq(0);
-  aCos4.setFreq(0);
+  aCos2.setFreq(mtof(snapToNearestNote(downsampledGreen, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
+  aCos3.setFreq(mtof(snapToNearestNote(downsampledBlue, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
+  // aCos4.setFreq(0);
 
 }
 
@@ -523,13 +525,16 @@ AudioOutput_t updateAudio() {
   the number to match the capability of the system.
 */
   auto asig = 
-  toSFraction(aCos1.next()) +
-  toSFraction(aCos2.next()) +
-  toSFraction(aCos3.next()) +
-  toSFraction(aCos4.next());
+  (toSFraction(aCos1.next())) +
+  toSFraction(aCos2.next()) + 
+  toSFraction(aCos3.next());
+  // toSFraction(aCos4.next());
+
+  auto vol = UFix<8, 0>(globalGain);
+  
   // toSFraction(aCos6.next()) + toSFraction(aCos6b.next()); /* +
 // toSFraction(aCos7.next()) + toSFraction(aCos7b.next()) +*/
-  return MonoOutput::fromSFix(asig);
+  return MonoOutput::fromSFix(asig * vol);
 }
 
 
