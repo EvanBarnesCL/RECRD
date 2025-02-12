@@ -12,7 +12,7 @@
 #include <Arduino.h>
 #include <Crunchlabs_DRV8835.h>
 #include <Wire.h>
-#include <VEML3328.h>
+// #include <VEML3328.h>
 #include <PWMFreak.h>
 #define MOZZI_CONTROL_RATE 128
 #include <Mozzi.h>
@@ -24,7 +24,7 @@
 #include <mozzi_utils.h>
 #include <mozzi_rand.h>
 #include <mozzi_midi.h>
-#include <FixMath.h>
+#include <CLS16D24.h>
 
 
 // **********************************************************************************
@@ -153,7 +153,7 @@ constexpr uint8_t ARM_DIR_PIN = 4;
 constexpr uint8_t ARM_ENC_PIN = A7;
 constexpr uint8_t TABLE_ENC_PIN = A6;
 
-constexpr uint8_t LED_PIN = A3;
+constexpr uint8_t LED_PIN = 3;
 
 
 DRV8835 tableMotor(TABLE_SPEED_PIN, TABLE_DIR_PIN, 50, true);
@@ -184,7 +184,8 @@ int32_t armCumulativePosition;
 // Color sensor
 // **********************************************************************************
 
-VEML3328 RGBCIR;
+CLS16D24 RGBCIR;
+uint16_t conversionTime = 0;
 
 enum class ColorChannels {
   RED,
@@ -221,7 +222,7 @@ EventDelay k_colorUpdateDelay;
 constexpr uint8_t VOLUME_POT_PIN = A0;
 constexpr uint8_t MIDDLE_POT_PIN = A1;
 constexpr uint8_t BACK_POT_PIN = A2;
-constexpr uint8_t HOMING_SWITCH = 2;
+constexpr uint8_t HOMING_SWITCH = 8;
 
 // **********************************************************************************
 // Mozzi stuff
@@ -337,20 +338,31 @@ void setup()
 
   // set up the color sensor over i2c
   Wire.begin(); 
-  if (!RGBCIR.begin()) {                                   
+  if (!RGBCIR.begin(true)) {          // set parameter to true to use i2c fast mode (400kHz instead of 100kHz)                           
     Serial.println("ERROR: couldn't detect the sensor");
     while (1){}            
   }
   // IMPORTANT: Set the I2C clock to 400kHz fast mode AFTER initializing the connection to the sensor.
   // Need to use fastest I2C possible to minimize latency for Mozzi.
-  Wire.setClock(400000);
+  // Wire.setClock(400000);
 
   // Configure the color sensor.
-  RGBCIR.Enable();
-  RGBCIR.setGain(2);
-  RGBCIR.setSensitivity(high_sens);
-  RGBCIR.setDG(2);
-  RGBCIR.setIntegrationTime(IT_50MS);
+  RGBCIR.reset();
+  RGBCIR.enable();
+  RGBCIR.setGain(96, true);     // Set gain to x96, use double diode sensing area (increases sensitivity)
+  /**
+   * Both the total time it takes to convert a color reading into values and the resolution of that data are set
+   * by the value of a single byte, which you can set with setResolutionAndConversionTime(). The resolutoin and
+   * conversion time are interdependent, so it's difficult to know what time and resolution you are going to get
+   * by the value you set the byte to. Open CLS16D24.h, and at the bottom you will find a large comment that shows
+   * all possible values for conversion time and resolution.
+  */
+  RGBCIR.setResolutionAndConversionTime(0x01);
+  Serial.print("Conversion time: ");
+  conversionTime = RGBCIR.getConversionTimeMillis();
+  Serial.println(conversionTime);  // Calculates the conversion time determined by setResolutionAndConversionTime()
+  Serial.print("Resolution: ");
+  Serial.println(RGBCIR.getResolution());            // Calculates resolution determined by setResolutionAndConversionTime()
 
   // Define which color channels to update here. Set to true to enable that color channel.
   updateChannels[static_cast<int>(ColorChannels::RED)] = true;
@@ -657,27 +669,30 @@ int16_t armAngleToDistance(int16_t angle) {
 }
 
 
-
-
-
-
 bool updateColorReadings(ColorValues *colorReadings) {
-  // check to see if the channel is enabled && if the current color channel needs to be updated
-  if (updateChannels[static_cast<int>(ColorChannels::RED)] && currentColorChannel == ColorChannels::RED) {
-    colorReadings->red = RGBCIR.getRed();
-  } else if (updateChannels[static_cast<int>(ColorChannels::GREEN)] && currentColorChannel == ColorChannels::GREEN) {
-    colorReadings->green = RGBCIR.getGreen();
-  } else if (updateChannels[static_cast<int>(ColorChannels::BLUE)] && currentColorChannel == ColorChannels::BLUE) {
-    colorReadings->blue = RGBCIR.getBlue();
-  } else if (updateChannels[static_cast<int>(ColorChannels::CLEAR)] && currentColorChannel == ColorChannels::CLEAR) {
-    colorReadings->clear = RGBCIR.getClear();
-  } else if (updateChannels[static_cast<int>(ColorChannels::IR)] && currentColorChannel == ColorChannels::IR) {
-    colorReadings->IR = RGBCIR.getIR();
-  } else {
-    return false;   // no color data was updated, so return false
-  }
-  return true;      // indicates that new color data is available
+  RGBCIR.readRGBWIR(colorReadings->red, colorReadings->green, colorReadings->blue, colorReadings->clear, colorReadings->IR);
+  return true;
 }
+
+
+
+// bool updateColorReadings(ColorValues *colorReadings) {
+//   // check to see if the channel is enabled && if the current color channel needs to be updated
+//   if (updateChannels[static_cast<int>(ColorChannels::RED)] && currentColorChannel == ColorChannels::RED) {
+//     colorReadings->red = RGBCIR.getRed();
+//   } else if (updateChannels[static_cast<int>(ColorChannels::GREEN)] && currentColorChannel == ColorChannels::GREEN) {
+//     colorReadings->green = RGBCIR.getGreen();
+//   } else if (updateChannels[static_cast<int>(ColorChannels::BLUE)] && currentColorChannel == ColorChannels::BLUE) {
+//     colorReadings->blue = RGBCIR.getBlue();
+//   } else if (updateChannels[static_cast<int>(ColorChannels::CLEAR)] && currentColorChannel == ColorChannels::CLEAR) {
+//     colorReadings->clear = RGBCIR.getClear();
+//   } else if (updateChannels[static_cast<int>(ColorChannels::IR)] && currentColorChannel == ColorChannels::IR) {
+//     colorReadings->IR = RGBCIR.getIR();
+//   } else {
+//     return false;   // no color data was updated, so return false
+//   }
+//   return true;      // indicates that new color data is available
+// }
 
 
 void printColorData() {
