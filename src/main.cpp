@@ -181,8 +181,8 @@ int16_t armEncVal, tableEncVal, middlePotVal, backPotVal;
 AS5600L tableEncoder;
 AS5600 armEncoder;
 
-DCfilter armDCFilter(0.8);          // DC filter detects changes in arm position (settles to 0 if the arm is not moving)
-DCfilter tableDCFilter(0.99);        // DC filter for table movement
+DCfilter armDCFilter(0.9);          // DC filter detects changes in arm position (settles to 0 if the arm is not moving)
+DCfilter tableDCFilter(0.9);        // DC filter for table movement
 constexpr int8_t DCMovementThreshold = 5;   // If the DC filter shows a value between + and - DCMovementThreshold, we know that axis is not moving
 
 int32_t tableCumulativePosition;
@@ -613,7 +613,13 @@ void homeArm() {
   armMotor.setSpeed(0);
   armEncoder.resetCumulativePosition();
   delay(1000);
-  armMotor.setSpeed(-64);
+
+  // ramp the motor speed down as it gets toward the center target
+  while (armEncoder.getCumulativePosition() > -600) {
+    armMotor.setSpeed((-armEncoder.getCumulativePosition() >> 2) - 200);
+  }
+  // finally, slowly bring the sensor arm directly over the center of the table
+  armMotor.setSpeed(-50);
   while (armEncoder.getCumulativePosition() > -661) {};   // run motor toward 0 until it's reached
   armMotor.setSpeed(0);
   armEncoder.resetCumulativePosition();
