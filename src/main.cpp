@@ -25,6 +25,8 @@
 #include <mozzi_rand.h>
 #include <mozzi_midi.h>
 #include <CLS16D24.h>
+#include <AS5600.h>
+#include <DCfilter.h>
 
 
 /*
@@ -160,7 +162,7 @@ constexpr uint8_t LED_PIN = 11;
 
 
 DRV8835 tableMotor(TABLE_SPEED_PIN, TABLE_DIR_PIN, 50, true);
-DRV8835 armMotor(ARM_SPEED_PIN, ARM_DIR_PIN, 50, false);
+DRV8835 armMotor(ARM_SPEED_PIN, ARM_DIR_PIN, 50, true);
 
 
 void homeArm();
@@ -176,8 +178,12 @@ const char* MIDINoteToNoteName(uint8_t note);     // convert MIDI note to note n
 
 int16_t armEncVal, tableEncVal, middlePotVal, backPotVal;
 
-AnalogEncoder tableEncoder(TABLE_ENC_PIN);
-AnalogEncoder armEncoder(ARM_ENC_PIN);
+AS5600L tableEncoder;
+AS5600 armEncoder;
+
+DCfilter armDCFilter(0.8);          // DC filter detects changes in arm position (settles to 0 if the arm is not moving)
+DCfilter tableDCFilter(0.99);        // DC filter for table movement
+constexpr int8_t DCMovementThreshold = 5;   // If the DC filter shows a value between + and - DCMovementThreshold, we know that axis is not moving
 
 int32_t tableCumulativePosition;
 int32_t armCumulativePosition;
@@ -222,10 +228,10 @@ EventDelay k_colorUpdateDelay;
 // Potentiometers and switch
 // **********************************************************************************
 
-constexpr uint8_t VOLUME_POT_PIN = A0;
-constexpr uint8_t MIDDLE_POT_PIN = A1;
-constexpr uint8_t BACK_POT_PIN = A2;
-constexpr uint8_t HOMING_SWITCH = 8;
+constexpr uint8_t POT_A_PIN = A0;
+constexpr uint8_t POT_B_PIN = A1;
+constexpr uint8_t AUDIO_IN_PIN = A2;
+constexpr uint8_t BUTTONS_PIN = A3;
 
 // **********************************************************************************
 // Mozzi stuff
@@ -321,26 +327,22 @@ void setup()
   Serial.begin(115200);
   Serial.println("starting");
 
-  // set up pin modes
-  pinMode(HOMING_SWITCH, INPUT_PULLUP);
+  // start the I2C bus
+  Wire.begin(); 
 
   // Calibrate the encoders before Mozzi starts. Calibration relies on stock analogRead(),
   // which is blocking. 
   tableEncoder.begin();
-  tableEncoder.calibrate(0);    // calibrate to 0 as starting position for the table
+  // tableEncoder.setDirection(AS5600_COUNTERCLOCK_WISE);
+  tableEncoder.resetCumulativePosition();    // calibrate to 0 as starting position for the table
   armEncoder.begin();
-  
-  // Now home the arm. Note that this function depends on delay() and analogRead(),
-  // so it has to be called in setup() before starting Mozzi, and before changing 
-  // the PWM clock rate for the motor controller's PWM pins.
+
+  // Now home the arm. This moves the arm back to the center of the table by the end of the routine,
+  // and then resets the arm encoder position to 0.
   homeArm();
-  // The arm is at the home position, so we can calibrate the encoder finally.
-  // Adding settling delay before calibrating to be sure the motor is fully stopped.
-  delay(100);
-  armEncoder.calibrate(512);    // calibrate to 512 as our starting encoder measurement
+
 
   // set up the color sensor over i2c
-  Wire.begin(); 
   if (!RGBCIR.begin(true)) {          // set parameter to true to use i2c fast mode (400kHz instead of 100kHz)                           
     Serial.println("ERROR: couldn't detect the sensor");
     while (1){}            
@@ -474,9 +476,10 @@ void updateControl() {
   currentColorChannel = static_cast<ColorChannels>((static_cast<int>(currentColorChannel) + 1) % 5);
 
   // update the potentiometer values
-  globalGain = k_GlobalGainMap(mozziAnalogRead<8>(VOLUME_POT_PIN));
-  middlePotVal = mozziAnalogRead<10>(MIDDLE_POT_PIN);
-  backPotVal = mozziAnalogRead<10>(BACK_POT_PIN);
+
+  // globalGain = k_GlobalGainMap(mozziAnalogRead<8>(POT_A_PIN));
+  // middlePotVal = mozziAnalogRead<10>(POT_B_PIN);
+  // backPotVal = mozziAnalogRead<10>(BACK_POT_PIN);
 
   // finally, actually change the sound being generated based on the various controls
   // aSin.setFreq(static_cast<float>(k_redChannelVibMap(colorData.red >> 1)));
@@ -570,56 +573,52 @@ void loop() {
 // Function Definitions
 // **********************************************************************************
 
-
-
 void homeArm() {
-  // first check to see if we're starting homing with the switch already pressed, move away if so
-  if (digitalRead(HOMING_SWITCH) == 0) {
-    armMotor.setSpeed(255);
-    while (debounceSwitch());   // delay while the switch is held down
-    delay(500);                 // move a bit more just for clearance
-    armMotor.setSpeed(0);
-    delay(200);
-  }
+  Serial.println("starting homing");
+  // start the arm moving
+  armMotor.setSpeed(128);
+  // depending on where the arm was, there may be backlash. wait for that to be taken up before watching for the arm to stop moving.
 
-  // start the arm motor spinning
-  armMotor.setSpeed(255);
-  // wait for the switch to be pressed
-  while (!debounceSwitch()) {
-  }
+  delay(2000);
+  Serial.println("moving");
+  // now we know that the backlash was taken up and the arm is moving. Or it's already against the stop, but we'll detect that next either way.
 
-  // read the current angle on the encoder
-  uint16_t switchActivatedAngle = analogRead(ARM_ENC_PIN), homeAngle = 0;
-  constexpr uint16_t switchOffsetAngle = 15;            // angular distance of the switch activation position from the desired home position
-  // set the target home position angle
-  homeAngle = switchActivatedAngle - switchOffsetAngle;    
-  homeAngle &= 1023;          // make sure this value wraps around 0 point correctly
-  armMotor.setSpeed(-64);     // slow down the motor for the final approach
-  while (analogRead(ARM_ENC_PIN) != homeAngle) {
-    // Serial.println(analogRead(ARM_ENC_PIN));
-    // just let the motor run until we hit the home angle
+  armEncoder.getCumulativePosition();
+  // I found that for the DC filter for the arm, I need to scale the encoder position by a factor of 1000. Otherwise the DC filter just hovers
+  // around +- 1, and doesn't seems sensitive enough at this speed of movement. Or like it settles too fast or something. scaling sort of 
+  // fixed it for now, and I also added a super rough low pass filter by implementing prevArmDC. This way two DC filter measurements in a row
+  // have to indicate that the arm has stopped for it to actually stop. Could add a real LP filter on top of the DC filter if needed, but this
+  // seems to work for now. Actually I wound up adding a small array to sort of average out the DC. This seems to be better. 
+  int16_t armDC = armDCFilter.next(1000 * armEncoder.getCumulativePosition());
+  constexpr uint8_t armDCarrSize = 5;
+  int16_t armDCLP[armDCarrSize] = {armDC, 1000, 1000, 1000, 1000};
+  uint8_t armDCiter = 1;
+
+  int16_t armDCSum = 0;
+  for (int i = 0; i < armDCarrSize; i++) {
+    armDCSum += armDCLP[i];
   }
+  while (armDCSum < -DCMovementThreshold || armDCSum > DCMovementThreshold) {     // while the arm is moving
+    Serial.print(armEncoder.getCumulativePosition()); Serial.print("      ");
+    armDC = armDCFilter.next(1000 * armEncoder.getCumulativePosition());
+    armDCLP[armDCiter] = armDC;
+    armDCiter = (++armDCiter) % armDCarrSize;
+    armDCSum = 0;
+    for (int i = 0; i < armDCarrSize; i++) {
+      armDCSum += armDCLP[i];
+    }
+    Serial.println(armDC);
+  }
+  Serial.println("homing finished");
   armMotor.setSpeed(0);
+  armEncoder.resetCumulativePosition();
+  delay(1000);
+  armMotor.setSpeed(-64);
+  while (armEncoder.getCumulativePosition() > -661) {};   // run motor toward 0 until it's reached
+  armMotor.setSpeed(0);
+  armEncoder.resetCumulativePosition();
 }
 
-
-
-
-
-bool debounceSwitch() {
-  static bool triggered = false, firstClose = true;
-  static uint16_t triggeredTime = 0;
-  triggered = digitalRead(HOMING_SWITCH) == 0 ? true : false;
-  if (triggered && firstClose) {
-    triggeredTime = millis();
-    firstClose = false;
-  } else if (triggered && millis() - triggeredTime > 5) {
-    firstClose = true;
-    triggered = false;
-    return true;
-  }
-  return false;
-}
 
 
 int16_t armDistanceToAngle(int16_t distance) {
@@ -764,9 +763,9 @@ void printColorData() {
 bool initializationRoutine() {
   tableEncoder.getCumulativePosition();
   armEncoder.getCumulativePosition();
-  mozziAnalogRead<10>(VOLUME_POT_PIN);
-  mozziAnalogRead<10>(MIDDLE_POT_PIN);
-  mozziAnalogRead<10>(BACK_POT_PIN);
+  // mozziAnalogRead<10>(POT_A_PIN);
+  // mozziAnalogRead<10>(POT_B_PIN);
+  // mozziAnalogRead<10>(BACK_POT_PIN);
 
   Serial.print(currentArmPosition);
   Serial.print("   measured: ");
