@@ -27,6 +27,8 @@
 #include <CLS16D24.h>
 
 
+/*
+
 // **********************************************************************************
 // Analog Encoder Class
 // **********************************************************************************
@@ -138,6 +140,7 @@ private:
     }
 };
 
+*/
 
 
 // **********************************************************************************
@@ -145,15 +148,15 @@ private:
 // **********************************************************************************
 
 
-constexpr uint8_t TABLE_SPEED_PIN = 6;
-constexpr uint8_t TABLE_DIR_PIN = 7;
-constexpr uint8_t ARM_SPEED_PIN = 5;
-constexpr uint8_t ARM_DIR_PIN = 4;
+constexpr uint8_t TABLE_SPEED_PIN = 5;
+constexpr uint8_t TABLE_DIR_PIN = 4;
+constexpr uint8_t ARM_SPEED_PIN = 6;
+constexpr uint8_t ARM_DIR_PIN = 7;
 
-constexpr uint8_t ARM_ENC_PIN = A7;
-constexpr uint8_t TABLE_ENC_PIN = A6;
+// constexpr uint8_t ARM_ENC_PIN = A7;
+// constexpr uint8_t TABLE_ENC_PIN = A6;
 
-constexpr uint8_t LED_PIN = 3;
+constexpr uint8_t LED_PIN = 11;
 
 
 DRV8835 tableMotor(TABLE_SPEED_PIN, TABLE_DIR_PIN, 50, true);
