@@ -8,6 +8,7 @@
 #define USE_FAST_PWM
 
 #define USE_MOZZI_ANALOG_READ
+#define MOZZI_ANALOG_READ_RESOLUTION 10
 
 #include <Arduino.h>
 #include <Crunchlabs_DRV8835.h>
@@ -165,17 +166,24 @@ DRV8835 tableMotor(TABLE_SPEED_PIN, TABLE_DIR_PIN, 50, true);
 DRV8835 armMotor(ARM_SPEED_PIN, ARM_DIR_PIN, 50, true);
 
 
-void homeArm();
+void homeArm(int16_t startingPosition = 0);
 bool debounceSwitch();
 
 
 int16_t armRadiusToAngle(int16_t radiusMM);     // convert arm radius in millimeters to angle in encoder counts
 int16_t armAngleToRadius(int16_t angleCounts);  // convert arm angle in encoder counts to radius in millimeters
+int16_t convertPotValToArmRadius(uint16_t potVal);
+int16_t convertPotValToTableSpeed(int16_t potVal);
+
+
+int16_t moveArmToRadius(int8_t targetRadius, int8_t currentArmPosition);
+
+
 
 
 // int16_t armDistanceToAngle(int16_t distance);     // calculates arm encoder angle from linear position of color sensor
 // int16_t armAngleToDistance(int16_t angle);        // calculates linear position of color sensor based on arm encoder angle
-bool initializationRoutine();                     // initialization routine to properly position the arm over the table and prime the color sensor
+// bool initializationRoutine();                     // initialization routine to properly position the arm over the table and prime the color sensor
 uint8_t noteNameToMIDINote(const char* noteName);          // convert note names to MIDI note numbers (e.g., F#2 -> 42)
 const char* MIDINoteToNoteName(uint8_t note);     // convert MIDI note to note name (e.g., 42 -> F#2)
 
@@ -185,7 +193,7 @@ int16_t armEncVal, tableEncVal, middlePotVal, backPotVal;
 AS5600L tableEncoder;
 AS5600 armEncoder;
 
-DCfilter armDCFilter(0.9);          // DC filter detects changes in arm position (settles to 0 if the arm is not moving)
+DCfilter armDCFilter(0.95);          // DC filter detects changes in arm position (settles to 0 if the arm is not moving)
 DCfilter tableDCFilter(0.9);        // DC filter for table movement
 constexpr int8_t DCMovementThreshold = 5;   // If the DC filter shows a value between + and - DCMovementThreshold, we know that axis is not moving
 
@@ -256,7 +264,7 @@ IntMap k_GlobalGainMap(0, 255, 0, MAX_GLOBAL_GAIN);     // maps potentiometer va
 EventDelay k_printTimer, k_chordChangeTimer;
 
 bool newColorData = false;      // flag to indicate that new color data is ready for use
-int16_t currentArmPosition = 0; // current arm position in millimeters from center of table
+int8_t currentArmPosition = 0; // current arm position in millimeters from center of table
 
 
 
@@ -340,10 +348,14 @@ void setup()
   // tableEncoder.setDirection(AS5600_COUNTERCLOCK_WISE);
   tableEncoder.resetCumulativePosition();    // calibrate to 0 as starting position for the table
   armEncoder.begin();
+  
+  tableEncoder.setHysteresis(11);
+  armEncoder.setHysteresis(11);
+
 
   // Now home the arm. This moves the arm back to the center of the table by the end of the routine,
   // and then resets the arm encoder position to 0.
-  homeArm();
+  homeArm(armRadiusToAngle(convertPotValToArmRadius(analogRead(POT_A_PIN))));
 
 
   // set up the color sensor over i2c
@@ -358,7 +370,7 @@ void setup()
   // Configure the color sensor.
   RGBCIR.reset();
   RGBCIR.enable();
-  RGBCIR.setGain(96, true);     // Set gain to x96, use double diode sensing area (increases sensitivity)
+  RGBCIR.setGain(32, false);     // Set gain to x96, use double diode sensing area (increases sensitivity)
   /**
    * Both the total time it takes to convert a color reading into values and the resolution of that data are set
    * by the value of a single byte, which you can set with setResolutionAndConversionTime(). The resolutoin and
@@ -380,8 +392,7 @@ void setup()
   updateChannels[static_cast<int>(ColorChannels::CLEAR)] = true;
   updateChannels[static_cast<int>(ColorChannels::IR)] = true;
 
-  delay(1000);
-
+  
   #ifdef USE_FAST_PWM
   // use fast PWM to remove audible noise from driving the motors. 
   // IMPORTANT: This breaks millis() and delay(), and may have other effects I haven't
@@ -389,6 +400,11 @@ void setup()
   // behave as expected.
   setPwmFrequency(5, 1);    // sets Timer0 clock divisor to 1 instead of 64
   #endif
+  
+  analogWrite(LED_PIN, 128);
+  delay(1000);
+  uint16_t tableSpeed = analogRead(POT_B_PIN);
+  tableMotor.setSpeed(convertPotValToTableSpeed(tableSpeed));
 
 
   // start Mozzi
@@ -439,30 +455,35 @@ void setup()
 
 void updateControl() {
   newColorData = false;
-  static bool initializeControl = true;
   static uint8_t chordIterator = 0;
   
-  currentArmPosition = armAngleToDistance(armEncoder.getCumulativePosition());
+  currentArmPosition = armAngleToRadius(armEncoder.getCumulativePosition());
+  int8_t targetArmPos = convertPotValToArmRadius(mozziAnalogRead<10>(POT_A_PIN));
+  moveArmToRadius(targetArmPos, currentArmPosition);
+  int16_t targetTableSpeed = convertPotValToTableSpeed(mozziAnalogRead<10>(POT_B_PIN));
+  tableMotor.setSpeed(targetTableSpeed);
+
+  Serial.println(targetTableSpeed);
 
   // if the system has just started, we need to initialize a few things during the updateControl loop
   // prior to actually running the main sound and motor controls.
-  if (initializeControl) {
-    initializeControl = initializationRoutine();
-    return;     // break out of the updateControl loop early if initializeControl is still true
-  }
+  // if (initializeControl) {
+  //   initializeControl = initializationRoutine();
+  //   return;     // break out of the updateControl loop early if initializeControl is still true
+  // }
   
   
   // set the speed the arm will move at for the test pattern
-  constexpr int16_t armSpeed = 0;
+  // constexpr int16_t armSpeed = 0;
 
   // as a test pattern, move the arm in and out from edge to center and back
-  static int16_t armVector = -1 * armSpeed;
-  if (currentArmPosition < 5) {
-    armVector = armSpeed;
-  } else if (currentArmPosition > 71) {
-    armVector = -1 * armSpeed;
-  }
-  armMotor.setSpeed(armVector);
+  // static int16_t armVector = -1 * armSpeed;
+  // if (currentArmPosition < 5) {
+  //   armVector = armSpeed;
+  // } else if (currentArmPosition > 71) {
+  //   armVector = -1 * armSpeed;
+  // }
+  // armMotor.setSpeed(armVector);
   
   
   // update colors as needed (update interval determined by k_colorUpdateDelay)
@@ -472,7 +493,7 @@ void updateControl() {
   }
   // if there is new color data, print it to the monitor
   if (newColorData) {
-    printColorData();
+    // printColorData();
   }
   // rotate to updating the next color channel - only one gets updated each loop.
   // this minimizes time spent in the updateControl loop waiting for color data. 
@@ -577,7 +598,7 @@ void loop() {
 // Function Definitions
 // **********************************************************************************
 
-void homeArm() {
+void homeArm(int16_t startingPosition) {
   Serial.println("starting homing");
   // start the arm moving
   armMotor.setSpeed(128);
@@ -603,7 +624,7 @@ void homeArm() {
     armDCSum += armDCLP[i];
   }
   while (armDCSum < -DCMovementThreshold || armDCSum > DCMovementThreshold) {     // while the arm is moving
-    Serial.print(armEncoder.getCumulativePosition()); Serial.print("      ");
+    // Serial.print(armEncoder.getCumulativePosition()); Serial.print("      ");
     armDC = armDCFilter.next(1000 * armEncoder.getCumulativePosition());
     armDCLP[armDCiter] = armDC;
     armDCiter = (++armDCiter) % armDCarrSize;
@@ -611,22 +632,19 @@ void homeArm() {
     for (int i = 0; i < armDCarrSize; i++) {
       armDCSum += armDCLP[i];
     }
-    Serial.println(armDC);
+    // Serial.println(armDC);
   }
   Serial.println("homing finished");
   armMotor.setSpeed(0);
-  armEncoder.resetCumulativePosition();
+  armEncoder.resetCumulativePosition(661);
   delay(1000);
 
-  // ramp the motor speed down as it gets toward the center target
-  while (armEncoder.getCumulativePosition() > -600) {
-    armMotor.setSpeed((-armEncoder.getCumulativePosition() >> 2) - 200);
-  }
+  
   // finally, slowly bring the sensor arm directly over the center of the table
-  armMotor.setSpeed(-50);
-  while (armEncoder.getCumulativePosition() > -661) {};   // run motor toward 0 until it's reached
+  armMotor.setSpeed(-128);
+  while (armEncoder.getCumulativePosition() > startingPosition) {};   // run motor toward 0 until it's reached
   armMotor.setSpeed(0);
-  armEncoder.resetCumulativePosition();
+  armEncoder.resetCumulativePosition(startingPosition);
 }
 
 /**
@@ -659,12 +677,29 @@ void homeArm() {
  * That's equivalent to (774 * radiusMM) / 128. The denominator of 128 is nice because that's 2^7, so instead of performing the slow
  * operation of dividing by 128, we can perform the extremely fast operation of bitshifting right by 7 places. 
  * 
+ * One final note on this is that bit shift operations are not valid on signed integers (those that can contain negative values). 
+ * You can perform the operation and move the bits, but it won't yield the mathematical results you expect. That's because one of the
+ * bits is the sign bits, and tells the processor if the number is negative or not. Performing a bit shift moves that sign bit and messes
+ * up the math. So the function implementation takes the absolute value of the radius parameter and puts that in an unsigned integer
+ * so that bit shifting will work. At some point it could be interesting to test various versions of this to see which is fastest. 
+ * Shifting by powers of 2 is faster than shifting by other numbers, so there's a chance that doing something like the following could be
+ * faster than what I have now:
+ * 
+ * return ((774 * absRadius) >> 8) << 1;
+ * 
+ * Or maybe just forgo the intermediate step of using absolute value and unsigned integers, and just divide the signed radius value by 128.
+ * 
  * If you want you can see a spreadsheet that I made to help figure all this out. It's not particularly well organized, and it's missing
  * the original math that I did by hand, as well as the Desmos graphs I made to check my reasoning, but it should help get some of the 
  * concepts clarified. https://docs.google.com/spreadsheets/d/1RaxqJCClSnBzAPjxKA0sKCvFVXpXQ3Gc1AZQWVGnURM/edit?usp=sharing
  */
 int16_t armRadiusToAngle(int16_t radiusMM) {
-  return (774 * radiusMM) >> 7;
+  uint16_t absRadius = abs(radiusMM);   // bit shifting operations on signed integers create weird results, so we have to use an unsigned int
+  if (radiusMM < 0) {
+    return -1 * ((774 * absRadius) >> 7);
+  } else {
+    return (774 * absRadius) >> 7;
+  }
 }
 
 
@@ -699,7 +734,12 @@ int16_t armRadiusToAngle(int16_t radiusMM) {
  * played has basically been a giant system of linear algebra and trig functions. 
  */
 int16_t armAngleToRadius(int16_t angleCounts) {
-  return 81 * angleCounts >> 9;
+  uint16_t absAngleCounts = abs(angleCounts);
+  if (angleCounts < 0) {
+    return -1 * ((81 * absAngleCounts) >> 9);
+  } else {
+    return (81 * absAngleCounts) >> 9;
+  }
 }
 
 
@@ -794,31 +834,31 @@ void printColorData() {
   updatingColors channels;
 
   if (updateChannels[static_cast<int>(ColorChannels::RED)]) {
-    if (!first) Serial.print(" "); else first = false;
+    if (!first) Serial.print("   "); else first = false;
     // Serial.print("Red:");
     channels.r = true;
     Serial.print(colorData.red);
   }
   if (updateChannels[static_cast<int>(ColorChannels::GREEN)]) {
-    if (!first) Serial.print(" "); else first = false;
+    if (!first) Serial.print("   "); else first = false;
     // Serial.print("Green:");
     channels.g = true;
     Serial.print(colorData.green);
   }
   if (updateChannels[static_cast<int>(ColorChannels::BLUE)]) {
-    if (!first) Serial.print(" "); else first = false;
+    if (!first) Serial.print("   "); else first = false;
     // Serial.print("Blue:");
     channels.b = true;
     Serial.print(colorData.blue);
   }
   if (updateChannels[static_cast<int>(ColorChannels::CLEAR)]) {
-    if (!first) Serial.print(" "); else first = false;
+    if (!first) Serial.print("   "); else first = false;
     // Serial.print("Clear:");
     channels.c = true;
     Serial.print(colorData.clear);
   }
   if (updateChannels[static_cast<int>(ColorChannels::IR)]) {
-    if (!first) Serial.print(" "); else first = false;
+    if (!first) Serial.print("   "); else first = false;
     // Serial.print("IR:");
     channels.ir = true;
     Serial.print(colorData.IR);
@@ -832,7 +872,7 @@ void printColorData() {
   Serial.println();
 }
 
-
+/*/
 
 
 // this will run for the first iteration to prime the mozziAnalogRead buffers.
@@ -886,7 +926,7 @@ bool initializationRoutine() {
   return true;
 }
 
-
+*/
 
 // this returns the MIDI note number for any note from C-1 to G9 (MIDI notes 0 through 127).
 // Pass the note name as a string into the parameter. E.g., "D#-1" returns 3, or "F#2" returns 42.
@@ -1041,3 +1081,25 @@ void convertArray_NoteNumbersToNames(const uint8_t midiNotes[], uint8_t numNotes
     noteNames[i] = MIDINoteToNoteName(midiNotes[i]);
   }
 }
+
+
+int16_t convertPotValToArmRadius(uint16_t potVal) {
+  return map(potVal, 1023, 0, 80, -80);
+}
+
+int16_t convertPotValToTableSpeed(int16_t potVal) {
+  int16_t speed = map(potVal, 0, 1023, -255, 255);
+  return (speed > 5 || speed < -5) ? speed : 0;       // add in a small deadband to account for play in the potentiometer
+}
+
+
+// for now, both the target radius and the currentArmPosition are radial values in millimeters. Might change later.
+int16_t moveArmToRadius(int8_t targetRadius, int8_t currentArmPosition) {
+  constexpr uint8_t kp = 8;
+  constexpr int8_t cutoff = 5;
+  int16_t error = targetRadius - currentArmPosition;
+  // if (abs(error < 5)) error = 0;
+  armMotor.setSpeed(constrain(kp * error, -255, 255));
+}
+
+
