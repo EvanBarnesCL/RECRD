@@ -28,122 +28,8 @@
 #include <CLS16D24.h>
 #include <AS5600.h>
 #include <DCfilter.h>
+#include <FastPID.h>
 
-
-/*
-
-// **********************************************************************************
-// Analog Encoder Class
-// **********************************************************************************
-
-
-class AnalogEncoder {
-public:
-    // Constructor with pin and optional zeroCrossHysteresis parameter
-    AnalogEncoder(uint8_t pin, bool zeroCrossHysteresis = false)
-        : _pin(pin), _offset(0), _zeroCrossHysteresis(zeroCrossHysteresis),
-          _hysteresisThreshold(1000) {}
-
-    void begin() {
-        pinMode(_pin, INPUT);
-        _lastPosition = update(); // Initialize last position
-    }
-
-    // this function relies on stock analogRead and is best to call when Mozzi is not running
-    void calibrate(int calibrationValue = 0) {
-      _offset = analogRead(_pin);
-      _position = calibrationValue;
-    }
-
-    int update() {
-        int value = readAnalog();
-        // Apply the offset
-        int adjustedValue = (value - _offset) & BITMASK;
-        // If zero-cross hysteresis is enabled, clamp noisy values near the 0 boundary
-        if (_zeroCrossHysteresis && adjustedValue > _hysteresisThreshold) {
-            adjustedValue = 0;
-        }
-        _lastReadValue = adjustedValue;
-        return adjustedValue;
-    }
-
-    void setHysteresisThreshold(int threshold) {
-        _hysteresisThreshold = threshold;
-    }
-
-    // Position tracking functions
-    int32_t getCumulativePosition(bool updatePosition = true) {
-        if (updatePosition) {
-            int16_t currentValue = update();
-            // Check for rotation wrap-around
-            if ((_lastPosition > 512) && (currentValue < (_lastPosition - 512))) {
-                // Wrapped from high to low - clockwise rotation
-                _position = _position + 1024 - _lastPosition + currentValue;
-            } else if ((currentValue > 512) && (_lastPosition < (currentValue - 512))) {
-                // Wrapped from low to high - counter-clockwise rotation
-                _position = _position - 1024 - _lastPosition + currentValue;
-            } else {
-                // No wrap-around, just add the difference
-                _position = _position - _lastPosition + currentValue;
-            }
-            _lastPosition = currentValue;
-        }
-        return _position;
-    }
-
-    int32_t getRevolutions() {
-        // For 10-bit ADC (0-1023), one revolution is 1024 steps
-        int32_t revs = _position >> 10;  // Divide by 1024
-        if (revs < 0) revs++; // Correct negative values
-        return revs;
-    }
-
-    int32_t resetPosition(int32_t position = 0) {
-        int32_t oldPosition = _position;
-        _position = position;
-        return oldPosition;
-    }
-
-    int32_t resetCumulativePosition(int32_t position = 0) {
-        _lastPosition = update();
-        int32_t oldPosition = _position;
-        _position = position;
-        return oldPosition;
-    }
-
-    int16_t getAngle() {
-        // Extract just the current angle from the cumulative position
-        // by taking the least significant 10 bits.
-        // This function was modified to return negative values when the
-        // cumulative position (_position) is less than 0. At least for me,
-        // this helps maintain a sense of rotation direction. Previously angle
-        // was always returned as a positive (uint16_t) value, which was confusing
-        // for negative direction rotations.
-        return (abs(_position) & BITMASK) * (_position < 0 ? -1: 1);
-    }
-
-private:
-    uint8_t _pin;             // Pin used for analogRead
-    int _offset;              // Offset for calibration
-    bool _zeroCrossHysteresis; // Apply hysteresis near 0 point
-    int _hysteresisThreshold; // Hysteresis threshold for noisy readings
-    
-    // Position tracking variables
-    int32_t _position = 0;    // Cumulative position counter
-    int16_t _lastPosition = 0;// Last known position
-    int16_t _lastReadValue = 0;// Last read value
-
-    bool _newCalibrate = true;
-
-    static const int BITMASK = 0x3FF;  // 10-bit bitmask (1023 in decimal)
-
-    // helper function to make switching between analogRead and mozziAnalogRead simpler
-    uint16_t readAnalog() {
-      return mozziAnalogRead<10>(_pin);  // Use 16-bit version
-    }
-};
-
-*/
 
 
 // **********************************************************************************
@@ -176,7 +62,8 @@ int16_t convertPotValToArmRadius(uint16_t potVal);
 int16_t convertPotValToTableSpeed(int16_t potVal);
 
 
-int16_t moveArmToRadius(int8_t targetRadius, int8_t currentArmPosition);
+// int16_t moveArmToRadius(int8_t targetRadius, int8_t currentArmPosition);
+void moveArmToRadius(int8_t targetRadius, int8_t currentRadius);
 
 
 
@@ -244,6 +131,9 @@ constexpr uint8_t POT_A_PIN = A0;
 constexpr uint8_t POT_B_PIN = A1;
 constexpr uint8_t AUDIO_IN_PIN = A2;
 constexpr uint8_t BUTTONS_PIN = A3;
+
+uint8_t buttonPressed = 255;                        // 255 means no button pressed, 0, 1 or 2 indicates which of the three buttons was pressed
+uint8_t getButtonPressed(uint16_t buttonPinVal);    // pass an analog reading on BUTTON_PIN into the parameter. Returns 1, 2, or 3 if one of those buttons is pressed, otherwise returns 255.
 
 // **********************************************************************************
 // Mozzi stuff
@@ -358,7 +248,11 @@ void setup()
   homeArm(armRadiusToAngle(convertPotValToArmRadius(analogRead(POT_A_PIN))));
 
 
-  // set up the color sensor over i2c
+  // set up the color sensor over i2c.
+  // I haven't tested this, but I think we need to set up the color sensor last, after the encoders. This is because the
+  // .begin() function for the color sensor has its parameter set to true, which commands the begin function to set the
+  // I2C bus to fast mode, which runs at 400kHz instead of 100kHz default. I found that setting the I2C bus to fast mode
+  // only works if we do it after the sensor is connected. Fast mode reduces latency, which is essential for Mozzi.
   if (!RGBCIR.begin(true)) {          // set parameter to true to use i2c fast mode (400kHz instead of 100kHz)                           
     Serial.println("ERROR: couldn't detect the sensor");
     while (1){}            
@@ -402,7 +296,8 @@ void setup()
   #endif
   
   analogWrite(LED_PIN, 128);
-  delay(1000);
+  // digitalWrite(LED_PIN, HIGH);
+
   uint16_t tableSpeed = analogRead(POT_B_PIN);
   tableMotor.setSpeed(convertPotValToTableSpeed(tableSpeed));
 
@@ -457,33 +352,18 @@ void updateControl() {
   newColorData = false;
   static uint8_t chordIterator = 0;
   
+  // check to see if buttons are pressed
+  buttonPressed = getButtonPressed(mozziAnalogRead<10>(BUTTONS_PIN));
+  // Serial.print(buttonPressed); Serial.print("     ");
+
   currentArmPosition = armAngleToRadius(armEncoder.getCumulativePosition());
   int8_t targetArmPos = convertPotValToArmRadius(mozziAnalogRead<10>(POT_A_PIN));
   moveArmToRadius(targetArmPos, currentArmPosition);
   int16_t targetTableSpeed = convertPotValToTableSpeed(mozziAnalogRead<10>(POT_B_PIN));
   tableMotor.setSpeed(targetTableSpeed);
 
-  Serial.println(targetTableSpeed);
+  // Serial.println(targetTableSpeed);
 
-  // if the system has just started, we need to initialize a few things during the updateControl loop
-  // prior to actually running the main sound and motor controls.
-  // if (initializeControl) {
-  //   initializeControl = initializationRoutine();
-  //   return;     // break out of the updateControl loop early if initializeControl is still true
-  // }
-  
-  
-  // set the speed the arm will move at for the test pattern
-  // constexpr int16_t armSpeed = 0;
-
-  // as a test pattern, move the arm in and out from edge to center and back
-  // static int16_t armVector = -1 * armSpeed;
-  // if (currentArmPosition < 5) {
-  //   armVector = armSpeed;
-  // } else if (currentArmPosition > 71) {
-  //   armVector = -1 * armSpeed;
-  // }
-  // armMotor.setSpeed(armVector);
   
   
   // update colors as needed (update interval determined by k_colorUpdateDelay)
@@ -493,18 +373,11 @@ void updateControl() {
   }
   // if there is new color data, print it to the monitor
   if (newColorData) {
-    // printColorData();
+    printColorData();
   }
-  // rotate to updating the next color channel - only one gets updated each loop.
-  // this minimizes time spent in the updateControl loop waiting for color data. 
-  // updateControl needs to run as quickly as possible, which is why I built it to do this.
-  currentColorChannel = static_cast<ColorChannels>((static_cast<int>(currentColorChannel) + 1) % 5);
 
-  // update the potentiometer values
 
-  // globalGain = k_GlobalGainMap(mozziAnalogRead<8>(POT_A_PIN));
-  // middlePotVal = mozziAnalogRead<10>(POT_B_PIN);
-  // backPotVal = mozziAnalogRead<10>(BACK_POT_PIN);
+
 
   // finally, actually change the sound being generated based on the various controls
   // aSin.setFreq(static_cast<float>(k_redChannelVibMap(colorData.red >> 1)));
@@ -641,10 +514,10 @@ void homeArm(int16_t startingPosition) {
 
   
   // finally, slowly bring the sensor arm directly over the center of the table
-  armMotor.setSpeed(-128);
-  while (armEncoder.getCumulativePosition() > startingPosition) {};   // run motor toward 0 until it's reached
-  armMotor.setSpeed(0);
-  armEncoder.resetCumulativePosition(startingPosition);
+  // armMotor.setSpeed(-128);
+  // while (armEncoder.getCumulativePosition() > startingPosition) {};   // run motor toward 0 until it's reached
+  // armMotor.setSpeed(0);
+  // armEncoder.resetCumulativePosition(startingPosition);
 }
 
 /**
@@ -743,57 +616,7 @@ int16_t armAngleToRadius(int16_t angleCounts) {
 }
 
 
-/*
-int16_t armDistanceToAngle(int16_t distance) {
-  // This is only accurate for input distances ranging from 0 to 100mm.
-  // Beyond this point the mechanism itself is non-linear.
 
-  // Multiply by 501 (5.01 * 100) for fixed-point arithmetic
-  // Break into 501 = 512 - 11 for efficient computation using shifts
-  int32_t temp = distance;  // Use 32-bit for intermediate calculation
-  
-  // Multiply by 512 using left shift (2^9 = 512)
-  int32_t angle = temp << 9;
-  
-  // Subtract 11 * x
-  angle -= temp * 11;
-  
-  // Divide by 100 to remove fixed-point scaling
-  // Use combination of shifts and division for better efficiency
-  // First shift right by 2 (divide by 4) then divide by 25
-  angle = (angle >> 2) / 25;
-  
-  // found to be unneccessary - Add offset of 507
-  // angle += 507;
-  
-  return (int16_t)angle;
-}
-
-
-
-int16_t armAngleToDistance(int16_t angle) {
-  // This is only accurate for input angles ranging from 0 to 512 encoder counts.
-  // Beyond this point the mechanism itself is non-linear.
-
-  // Multiply by 20 (0.2 * 100) for fixed-point arithmetic
-  // Use 16 + 4 for efficient computation using shifts
-  int32_t temp = angle;  // Use 32-bit for intermediate calculation
-  
-  // Multiply temp by (16 + 4) using left shifts and addition
-  int32_t distance = (temp << 4) + (temp << 2);
-
-  // Divide by 100 to remove fixed-point scaling
-  // Use combination of shifts and division for better efficiency
-  // First shift right by 2 (divide by 4) then divide by 25
-  distance = (distance >> 2) / 25;
-  
-  // found to be unneccessary - Add offset of 101
-  // distance += 101;
-  
-  return (int16_t)distance;
-}
-
-*/
 
 bool updateColorReadings(ColorValues *colorReadings) {
   RGBCIR.readRGBWIR(colorReadings->red, colorReadings->green, colorReadings->blue, colorReadings->clear, colorReadings->IR);
@@ -801,24 +624,6 @@ bool updateColorReadings(ColorValues *colorReadings) {
 }
 
 
-
-// bool updateColorReadings(ColorValues *colorReadings) {
-//   // check to see if the channel is enabled && if the current color channel needs to be updated
-//   if (updateChannels[static_cast<int>(ColorChannels::RED)] && currentColorChannel == ColorChannels::RED) {
-//     colorReadings->red = RGBCIR.getRed();
-//   } else if (updateChannels[static_cast<int>(ColorChannels::GREEN)] && currentColorChannel == ColorChannels::GREEN) {
-//     colorReadings->green = RGBCIR.getGreen();
-//   } else if (updateChannels[static_cast<int>(ColorChannels::BLUE)] && currentColorChannel == ColorChannels::BLUE) {
-//     colorReadings->blue = RGBCIR.getBlue();
-//   } else if (updateChannels[static_cast<int>(ColorChannels::CLEAR)] && currentColorChannel == ColorChannels::CLEAR) {
-//     colorReadings->clear = RGBCIR.getClear();
-//   } else if (updateChannels[static_cast<int>(ColorChannels::IR)] && currentColorChannel == ColorChannels::IR) {
-//     colorReadings->IR = RGBCIR.getIR();
-//   } else {
-//     return false;   // no color data was updated, so return false
-//   }
-//   return true;      // indicates that new color data is available
-// }
 
 
 void printColorData() {
@@ -833,29 +638,11 @@ void printColorData() {
 
   updatingColors channels;
 
-  if (updateChannels[static_cast<int>(ColorChannels::RED)]) {
-    if (!first) Serial.print("   "); else first = false;
-    // Serial.print("Red:");
-    channels.r = true;
-    Serial.print(colorData.red);
-  }
-  if (updateChannels[static_cast<int>(ColorChannels::GREEN)]) {
-    if (!first) Serial.print("   "); else first = false;
-    // Serial.print("Green:");
-    channels.g = true;
-    Serial.print(colorData.green);
-  }
   if (updateChannels[static_cast<int>(ColorChannels::BLUE)]) {
     if (!first) Serial.print("   "); else first = false;
     // Serial.print("Blue:");
     channels.b = true;
     Serial.print(colorData.blue);
-  }
-  if (updateChannels[static_cast<int>(ColorChannels::CLEAR)]) {
-    if (!first) Serial.print("   "); else first = false;
-    // Serial.print("Clear:");
-    channels.c = true;
-    Serial.print(colorData.clear);
   }
   if (updateChannels[static_cast<int>(ColorChannels::IR)]) {
     if (!first) Serial.print("   "); else first = false;
@@ -863,12 +650,30 @@ void printColorData() {
     channels.ir = true;
     Serial.print(colorData.IR);
   }
-  if (channels.r && channels.g && channels.b && channels.c) {
-    int32_t combined = colorData.red + colorData.green + colorData.blue;
-    int32_t diff = colorData.clear - combined;
-    Serial.print("    combined (r+g+b) = "); Serial.print(combined);
-    Serial.print("    clear - combined = "); Serial.print(diff);
-  } 
+  if (updateChannels[static_cast<int>(ColorChannels::CLEAR)]) {
+    if (!first) Serial.print("   "); else first = false;
+    // Serial.print("Clear:");
+    channels.c = true;
+    Serial.print(colorData.clear);
+  }
+  if (updateChannels[static_cast<int>(ColorChannels::GREEN)]) {
+    if (!first) Serial.print("   "); else first = false;
+    // Serial.print("Green:");
+    channels.g = true;
+    Serial.print(colorData.green);
+  }
+  if (updateChannels[static_cast<int>(ColorChannels::RED)]) {
+    if (!first) Serial.print("   "); else first = false;
+    // Serial.print("Red:");
+    channels.r = true;
+    Serial.print(colorData.red);
+  }
+  // if (channels.r && channels.g && channels.b && channels.c) {
+  //   int32_t combined = colorData.red + colorData.green + colorData.blue;
+  //   int32_t diff = colorData.clear - combined;
+  //   Serial.print("    combined (r+g+b) = "); Serial.print(combined);
+  //   Serial.print("    clear - combined = "); Serial.print(diff);
+  // } 
   Serial.println();
 }
 
@@ -1093,13 +898,93 @@ int16_t convertPotValToTableSpeed(int16_t potVal) {
 }
 
 
-// for now, both the target radius and the currentArmPosition are radial values in millimeters. Might change later.
-int16_t moveArmToRadius(int8_t targetRadius, int8_t currentArmPosition) {
-  constexpr uint8_t kp = 8;
-  constexpr int8_t cutoff = 5;
-  int16_t error = targetRadius - currentArmPosition;
-  // if (abs(error < 5)) error = 0;
-  armMotor.setSpeed(constrain(kp * error, -255, 255));
+/**
+ * @brief Moves the arm to a specified target radius using PID control
+ * 
+ * @details This function implements closed-loop arm position control using the FastPID library.
+ * It calculates the appropriate motor speed to reach the target position using PID control.
+ * While a simple proportional controller was almost sufficient, integral control was added
+ * to eliminate steady state error. The implementation uses FastPID which handles fixed-point
+ * math internally for efficient execution on microcontrollers.
+ * 
+ * Previous implementation:
+ * @code
+ * int16_t moveArmToRadius(int8_t targetRadius, int8_t currentArmPosition) {
+ *   constexpr uint8_t kp = 8;
+ *   int16_t error = targetRadius - currentArmPosition;
+ *   // if (abs(error < 5)) error = 0;
+ *   armMotor.setSpeed(constrain(kp * error, -255, 255));
+ * }
+ * @endcode
+ * 
+ * @param targetRadius The desired arm position in millimeters (radial value, not angular)
+ * @param currentRadius The current arm position in millimeters (radial value, not angular)
+ * @return void
+ */
+void moveArmToRadius(int8_t targetRadius, int8_t currentRadius) {
+  static constexpr float kp = 4.0, ki = .20, kd = .50;
+  static FastPID armMotorPID(kp, ki, kd, MOZZI_CONTROL_RATE, 8, true);
+  armMotor.setSpeed(armMotorPID.step(targetRadius, currentRadius));
 }
 
 
+/**
+ * @brief Detects button presses with timeless debouncing using a bit shift register.
+ * 
+ * @details This function implements a debouncing algorithm using a 16-bit shift register
+ * to track button state history. The function reads an analog value from a voltage divider
+ * circuit with three buttons multiplexed on a single analog input pin. The function shifts
+ * the button history left by 2 bits and stores the new button state in the 2 LSBs.
+ * A button is considered stably pressed only when its unique bit pattern fills the entire
+ * shift register (8 consecutive identical readings).
+ * 
+ * Button values:
+ * - 0: First button (voltage < 172)
+ * - 1: Second button (voltage < 510)
+ * - 2: Third button (voltage < 850)
+ * - 255: No button pressed
+ * 
+ * I consider this timeless because it isn't using millis() or micros() to track time, which
+ * is what most software debouncing algorithms do. Partly that's just inefficient: we can
+ * achieve debouncing without that overhead. But also, we can't use millis() with Mozzi. We
+ * could use Mozzi's ticks() function, but again, it's really efficent to just use bitwise math, 
+ * and we use every bit of processing power we can get for Mozzi. Note that I may remove this
+ * debounce logic entirely and use capacitors for hardware debouncing instead. Oh, also, I'm 
+ * using the fast PWM option to remove motor whine from the audio circuit, so we really can't use
+ * micros() or millis(). USE_FAST_PWM changes this.
+ * 
+ * I tested this with 256Hz update rates for the controls, and this debouncing works well. I 
+ * tried it with 1kHz updates in a test sketch, and that's too fast and we still get some bounce. 
+ * This should be fine for use with MOZZI_CONTROL_RATE = 128 Hz.
+ * 
+ * @param buttonPinVal The analog reading from the button input pin (0-1023).
+ * @return uint8_t The debounced button state (0, 1, or 2. Returns 255 if no button pressed)
+ */
+uint8_t getButtonPressed(uint16_t buttonPinVal) {
+  static uint16_t pressedContainer = 0b1111111111111111;  // initialize to decimal 255 to indicate no buttons pressed
+  pressedContainer = pressedContainer << 2;               // shift the container value left 2 places to make room for the next reading
+  // This monstrosity does a few things: sort of working right to left, it uses nested ? ternary operators to check the value of 
+  // buttonPinVal, and then returns a value of 0, 1, 2, or 255. That 0, 1, 2, or 255 gets a bitwise AND mask to set all the bits to 0, 
+  // except for the 2 least significant bits (LSBs), which get preserved. Finally, those two LSBs get bitwise OR'd with the value in
+  // pressedContainer. This essentially stashes the number of the button that was pressed in the two LSBs of pressedContainer.
+  pressedContainer = pressedContainer | (((buttonPinVal < 172) ? 0 : ((buttonPinVal < 510) ? 1 : ((buttonPinVal < 850 ? 2 : 255)))) & 0b0000000000000011);
+  
+  // now check to see if a button has been pressed for long enough for the reading to stabilize:
+  switch (pressedContainer) {
+    case 0:     // if the bits in pressedContainer are all 0, this means button 0 is pressed and has stabilized
+      return 0;
+      break;
+    
+    case 0b0101010101010101:  // this pattern is what pressedContainer looks like when button 1 is stabilized
+      return 1;
+      break;
+    
+    case 0b1010101010101010:  // this pattern is what it looks like when button 2 is stabilized
+      return 2;
+      break;
+    
+    default:
+      return 255;             // any other value means that no button has stabilized or is pressed
+      break;
+  }
+}
