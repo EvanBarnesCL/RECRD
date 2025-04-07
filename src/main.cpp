@@ -5,7 +5,8 @@
 // if this is defined, the PWM rate for Timer 0 is 62.5kHz, which removes audible PWM noise from driving motors.
 
 
-#define USE_FAST_PWM
+#define USE_FAST_PWM 1        // set to 1 to change the PWM clock divisor for pins 5 and 6 (timer 0) - removes motor noise from audio
+#define USE_LED_PWM  1        // set to 1 to change the PWM clock divisor for pins 3 and 11 (timer 2) - removes PWM noise due to LED dimming
 
 #define USE_MOZZI_ANALOG_READ
 #define MOZZI_ANALOG_READ_RESOLUTION 10
@@ -339,16 +340,25 @@ void setup()
   updateChannels[static_cast<int>(ColorChannels::IR)] = true;
 
   
-  #ifdef USE_FAST_PWM
-  // use fast PWM to remove audible noise from driving the motors. 
-  // IMPORTANT: This breaks millis() and delay(), and may have other effects I haven't
-  // found yet. After this line, you can't use millis() or delay() calls and have them
-  // behave as expected.
-  setPwmFrequency(5, 1);    // sets Timer0 clock divisor to 1 instead of 64
-  #endif
+  if (USE_FAST_PWM) {
+    // use fast PWM to remove audible noise from driving the motors. 
+    // IMPORTANT: This breaks millis() and delay(), and may have other effects I haven't
+    // found yet. After this line, you can't use millis() or delay() calls and have them
+    // behave as expected.
+    setPwmFrequency(5, 1);    // sets Timer0 clock divisor to 1 instead of 64. This moves the motor control pins above audible range
+  }
   
-  analogWrite(LED_PIN, 128);
-  // digitalWrite(LED_PIN, HIGH);
+  // EXPERIMENTAL:
+  // I noticed that if I try to use PWM dimming for the LEDs on the color sensor I get audible noise, so this is experimental.
+  // There's a chance that changing Timer 2's clock divisor will mess up Mozzi functions I'm not aware of.
+  if (USE_LED_PWM) {
+    setPwmFrequency(11, 1);   // set Timer2 to clock divisor of 1 (clock rate 31250Hz now, above audible range)
+    analogWrite(LED_PIN, 128);    // set the brightness for the LEDs
+  } else {
+    digitalWrite(LED_PIN, HIGH);  // just turn the color sensor LEDs on at full brightness
+  }
+
+  
 
   uint16_t tableSpeed = analogRead(POT_B_PIN);
   tableMotor.setSpeed(convertPotValToTableSpeed(tableSpeed));
@@ -427,10 +437,10 @@ void updateControl() {
     currentArmPosition = armAngleToRadius(armEncoder.getCumulativePosition());
     tableDC = tableDCFilter.next(tableEncoder.getCumulativePosition() * 4);
     newColorData = updateColorReadings(&colorData);
-    SERIAL_PRINT(String((float)v1)); SERIAL_PRINT(" ");
-    SERIAL_PRINT(String((float)v2)); SERIAL_PRINT(" "); 
-    SERIAL_PRINT(String((float)v3)); SERIAL_PRINT(" ");
-    SERIAL_PRINTLN(String((float)v4));
+    // SERIAL_PRINT(String((float)v1)); SERIAL_PRINT(" ");
+    // SERIAL_PRINT(String((float)v2)); SERIAL_PRINT(" "); 
+    // SERIAL_PRINT(String((float)v3)); SERIAL_PRINT(" ");
+    // SERIAL_PRINTLN(String((float)v4));
     k_i2cUpdateDelay.start();
   }
   
@@ -463,17 +473,17 @@ void updateControl() {
   // }
   // if there is new color data, print it to the monitor
   if (newColorData) {
-    // printColorData();
+    printColorData();
   }
 
 
   // oscil wash example sketch stuff
-  v1 = kVol1.next()>>1; // going at a higher freq, this creates zipper noise, so reduce the gain
+  // v1 = kVol1.next()>>1; // going at a higher freq, this creates zipper noise, so reduce the gain
   v2 = kVol2.next();
-  v3 = kVol3.next();
+  // v3 = kVol3.next();
   
   // v4 = kVol4.next();
-  v4 = map(colorData.green,0, 2048, -1024, 1024);
+  // v4 = map(colorData.green,0, 2048, -1024, 1024);
   // v5 = kVol5.next();
   // v6 = kVol6.next();
   // v7 = kVol7.next();
@@ -540,9 +550,9 @@ AudioOutput_t updateAudio() {
   // oscil wash example sketch stuff
   long asig = (long)
     // aCos1.next()*v1 +
-    // aCos2.next()*v2 +
+    aCos2.next() * v2; 
     // aCos3.next()*v3 +
-    aCos4.next() * v4;
+    // aCos4.next() * v4;
     // aCos5.next()*v5 +
     // aCos6.next()*v6;
     // aCos7.next()*v7 +
