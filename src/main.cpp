@@ -101,7 +101,7 @@ AS5600L tableEncoder;
 AS5600 armEncoder;
 
 DCfilter armDCFilter(0.95);          // DC filter detects changes in arm position (settles to 0 if the arm is not moving)
-DCfilter tableDCFilter(0.9);        // DC filter for table movement
+DCfilter tableDCFilter(0.6);        // DC filter for table movement
 constexpr int8_t DCMovementThreshold = 5;   // If the DC filter shows a value between + and - DCMovementThreshold, we know that axis is not moving
 int16_t tableDC = 0;                // the value of the DC filter for table movement.
 
@@ -390,7 +390,7 @@ void setup()
   // Oscil wash example sketch stuff
   // set harmonic frequencies
   aCos1.setFreq(mtof(60));
-  aCos2.setFreq(mtof(74));
+  aCos2.setFreq(440);
   aCos3.setFreq(mtof(64));
   aCos4.setFreq(mtof(77));
   // aCos5.setFreq(mtof(67));
@@ -479,7 +479,8 @@ void updateControl() {
 
   // oscil wash example sketch stuff
   // v1 = kVol1.next()>>1; // going at a higher freq, this creates zipper noise, so reduce the gain
-  v2 = kVol2.next();
+  // v2 = kVol2.next();
+  v2 = map(colorData.green, 0, 4095, 0, 255);
   // v3 = kVol3.next();
   
   // v4 = kVol4.next();
@@ -558,7 +559,7 @@ AudioOutput_t updateAudio() {
     // aCos7.next()*v7 +
     // aCos8.next()*v8;
   // asig = 0;
-  return MonoOutput::fromAlmostNBit(18, asig);
+  return MonoOutput::fromAlmostNBit(16, asig);
 
 }
 
