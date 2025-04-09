@@ -181,7 +181,9 @@ constexpr uint8_t MAX_GLOBAL_GAIN = 255;   // maximum global gain value
 bool newColorData = false;      // flag to indicate that new color data is ready for use
 int8_t currentArmPosition = 0; // current arm position in millimeters from center of table
 
+IntMap map_GreenToVol(0, 4095, 0, 255), map_BlueToVol(0, 4095, 0, 255), map_RedToVol(0, 4095, 0, 255);
 
+uint8_t mappedGreen = 0, mappedBlue = 0, mappedRed = 0;
 
 
 // **********************************************************************************
@@ -389,20 +391,20 @@ void setup()
   
   // Oscil wash example sketch stuff
   // set harmonic frequencies
-  aCos1.setFreq(mtof(60));
-  aCos2.setFreq(440);
-  aCos3.setFreq(mtof(64));
-  aCos4.setFreq(mtof(77));
+  // aCos1.setFreq(mtof(60));
+  aCos2.setFreq(mtof(noteNameToMIDINote("E2")));
+  aCos3.setFreq(mtof(noteNameToMIDINote("A3")));
+  aCos4.setFreq(mtof(noteNameToMIDINote("B4")));
   // aCos5.setFreq(mtof(67));
   // aCos6.setFreq(mtof(81));
   // aCos7.setFreq(mtof(60));
   // aCos8.setFreq(mtof(84));
   
 // set volume change frequencies
-  kVol1.setFreq(4.43f); // more of a pulse
-  kVol2.setFreq(0.0245f);
-  kVol3.setFreq(0.019f);
-  kVol4.setFreq(0.07f);
+  // kVol1.setFreq(4.43f); // more of a pulse
+  // kVol2.setFreq(0.0245f);
+  // kVol3.setFreq(0.019f);
+  // kVol4.setFreq(0.07f);
   // kVol5.setFreq(0.047f);
   // kVol6.setFreq(0.031f);
   // kVol7.setFreq(0.0717f);
@@ -476,13 +478,17 @@ void updateControl() {
     printColorData();
   }
 
+  mappedGreen = map_GreenToVol((colorData.green - 512) * 2);
+  mappedBlue = map_BlueToVol(colorData.blue * 4);
+  mappedRed = map_RedToVol(colorData.red * 2);
 
   // oscil wash example sketch stuff
   // v1 = kVol1.next()>>1; // going at a higher freq, this creates zipper noise, so reduce the gain
   // v2 = kVol2.next();
-  v2 = map(colorData.green, 0, 4095, 0, 255);
+  v2 = mappedGreen;
   // v3 = kVol3.next();
-  
+  v3 = mappedBlue;
+  v4 = mappedRed;
   // v4 = kVol4.next();
   // v4 = map(colorData.green,0, 2048, -1024, 1024);
   // v5 = kVol5.next();
@@ -551,15 +557,15 @@ AudioOutput_t updateAudio() {
   // oscil wash example sketch stuff
   long asig = (long)
     // aCos1.next()*v1 +
-    aCos2.next() * v2; 
-    // aCos3.next()*v3 +
-    // aCos4.next() * v4;
+    aCos2.next() * v2 + 
+    aCos3.next() * v3 +
+    aCos4.next() * v4;
     // aCos5.next()*v5 +
     // aCos6.next()*v6;
     // aCos7.next()*v7 +
     // aCos8.next()*v8;
   // asig = 0;
-  return MonoOutput::fromAlmostNBit(16, asig);
+  return MonoOutput::fromAlmostNBit(17, asig);
 
 }
 
@@ -748,11 +754,14 @@ void printColorData() {
 
   updatingColors channels;
 
+
+
   if (updateChannels[static_cast<int>(ColorChannels::BLUE)]) {
     if (!first) SERIAL_PRINT("   "); else first = false;
     // SERIAL_PRINT("Blue:");
     channels.b = true;
-    SERIAL_PRINT(colorData.blue);
+    // SERIAL_PRINT(colorData.blue);
+    SERIAL_PRINT(mappedBlue);
   }
   if (updateChannels[static_cast<int>(ColorChannels::IR)]) {
     if (!first) SERIAL_PRINT("   "); else first = false;
@@ -770,13 +779,15 @@ void printColorData() {
     if (!first) SERIAL_PRINT("   "); else first = false;
     // SERIAL_PRINT("Green:");
     channels.g = true;
-    SERIAL_PRINT(colorData.green);
+    // SERIAL_PRINT(colorData.green);
+    SERIAL_PRINT(mappedGreen);
   }
   if (updateChannels[static_cast<int>(ColorChannels::RED)]) {
     if (!first) SERIAL_PRINT("   "); else first = false;
     // SERIAL_PRINT("Red:");
     channels.r = true;
-    SERIAL_PRINT(colorData.red);
+    // SERIAL_PRINT(colorData.red);
+    SERIAL_PRINT(mappedRed);
   }
   // if (channels.r && channels.g && channels.b && channels.c) {
   //   int32_t combined = colorData.red + colorData.green + colorData.blue;
