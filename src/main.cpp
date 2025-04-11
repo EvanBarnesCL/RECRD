@@ -8,28 +8,28 @@
 #define USE_FAST_PWM 1        // set to 1 to change the PWM clock divisor for pins 5 and 6 (timer 0) - removes motor noise from audio
 #define USE_LED_PWM  1        // set to 1 to change the PWM clock divisor for pins 3 and 11 (timer 2) - removes PWM noise due to LED dimming
 
-#define USE_MOZZI_ANALOG_READ
-#define MOZZI_ANALOG_READ_RESOLUTION 10
 
 #include <Arduino.h>
-#include <Crunchlabs_DRV8835.h>
-#include <Wire.h>
-// #include <VEML3328.h>
-#include <PWMFreak.h>
-#define MOZZI_CONTROL_RATE 128
-#include <Mozzi.h>
-#include <Oscil.h>
-#include <tables/sin2048_int8.h>
-#include <tables/cos8192_int8.h>
-#include <IntMap.h>
-#include <EventDelay.h>
+#include <Crunchlabs_DRV8835.h>     // motor driver
+#include <Wire.h>                   // I2C
+#include <PWMFreak.h>               // Changes clock rate of timers (used to remove audible noise from motor driver and LED dimming)
+#define MOZZI_CONTROL_RATE 128      // Frequency of updateControls() calls
+#include <Mozzi.h>                  // Main synthesizer library
+#include <Oscil.h>                  // Oscillator
+#include <tables/sin2048_int8.h>    // Sine wavetable
+#include <tables/cos8192_int8.h>    // Cosine wavetable
+#include <tables/saw2048_int8.h>    // Saw wavetable
+#include <IntMap.h>                 // A more efficient replacement for map()
+#include <EventDelay.h>             // Mozzi library for performing actions at specific time intervals without delay() or millis()
 #include <mozzi_utils.h>
 #include <mozzi_rand.h>
-#include <mozzi_midi.h>
-#include <CLS16D24.h>
-#include <AS5600.h>
-#include <DCfilter.h>
-#include <FastPID.h>
+#include <mozzi_midi.h>             // MIDI functionality, used for mtof(), which converts MIDI note numbers to frequencies
+#include <CLS16D24.h>               // Color sensor
+#include <AS5600.h>                 // Magnetic encoders for the arm and table positions
+#include <DCfilter.h>               // DC filter used to detect changes in a signal (used for recognizing when arm and table stop moving)
+#include <FastPID.h>                // Fast fixed point math PID implementation used for controlling arm position - might remove
+#include <AutoMap.h>                // A version of map() that is auto-ranging. Used for mapping color values to control signals.
+
 
 /**
  * This is a macro for easily enabling or disabling the Serial monitor print statements. 
@@ -73,40 +73,24 @@ DRV8835 armMotor(ARM_SPEED_PIN, ARM_DIR_PIN, 50, true);
 
 
 void homeArm(int16_t startingPosition = 0);
-bool debounceSwitch();
 
 
 int16_t armRadiusToAngle(int16_t radiusMM);     // convert arm radius in millimeters to angle in encoder counts
 int16_t armAngleToRadius(int16_t angleCounts);  // convert arm angle in encoder counts to radius in millimeters
 int16_t convertPotValToArmRadius(uint16_t potVal);
 int16_t convertPotValToTableSpeed(int16_t potVal);
-
-
-// int16_t moveArmToRadius(int8_t targetRadius, int8_t currentArmPosition);
 void moveArmToRadius(int8_t targetRadius, int8_t currentRadius);
-
-
-
-
-// int16_t armDistanceToAngle(int16_t distance);     // calculates arm encoder angle from linear position of color sensor
-// int16_t armAngleToDistance(int16_t angle);        // calculates linear position of color sensor based on arm encoder angle
-// bool initializationRoutine();                     // initialization routine to properly position the arm over the table and prime the color sensor
-uint8_t noteNameToMIDINote(const char* noteName);          // convert note names to MIDI note numbers (e.g., F#2 -> 42)
-const char* MIDINoteToNoteName(uint8_t note);     // convert MIDI note to note name (e.g., 42 -> F#2)
-
-
-int16_t armEncVal, tableEncVal, middlePotVal, backPotVal;
 
 AS5600L tableEncoder;
 AS5600 armEncoder;
+
+int8_t currentArmPosition = 0; // current arm position in millimeters from center of table
 
 DCfilter armDCFilter(0.95);          // DC filter detects changes in arm position (settles to 0 if the arm is not moving)
 DCfilter tableDCFilter(0.6);        // DC filter for table movement
 constexpr int8_t DCMovementThreshold = 5;   // If the DC filter shows a value between + and - DCMovementThreshold, we know that axis is not moving
 int16_t tableDC = 0;                // the value of the DC filter for table movement.
 
-int32_t tableCumulativePosition;
-int32_t armCumulativePosition;
 
 
 // **********************************************************************************
@@ -114,7 +98,7 @@ int32_t armCumulativePosition;
 // **********************************************************************************
 
 CLS16D24 RGBCIR;
-uint16_t conversionTime = 0;
+uint16_t conversionTime = 0;      // time in milliseconds required for the color sensor to acquire new data - changes based on resolution settings
 
 enum class ColorChannels {
   RED,
@@ -126,6 +110,7 @@ enum class ColorChannels {
 
 ColorChannels currentColorChannel = ColorChannels::RED;
 
+// struct for storing the raw color value readings from the sensor as uint16_t
 struct ColorValues {
   uint16_t red = 0;
   uint16_t green = 0;
@@ -134,17 +119,37 @@ struct ColorValues {
   uint16_t IR = 0;
 };
 
-ColorValues colorData;
+ColorValues colorData;      // struct for the raw color data
+
+
+struct FixedPointColorValues {
+  UFix<16, 0> redFixed = 0;
+  UFix<16, 0> greenFixed = 0;  
+  UFix<16, 0> blueFixed = 0;
+  UFix<16, 0> clearFixed = 0;
+  UFix<16, 0> IRFixed = 0;  
+};
+
+// struct for storing the color data as fixed point values after they have been white balance corrected (after scaleColorDataFixedPoint() is applied to the raw colorData)
+FixedPointColorValues scaledFixedColorData;
+
+
 bool updateChannels[5] = {false, false, false, false, false}; // Flags to control which channels to update. defaults to all five off.
+
+uint8_t mappedGreen = 0, mappedBlue = 0, mappedRed = 0;   // where color data that has been mapped into control signals will be stored
 
 bool updateColorReadings(ColorValues *colorReadings);
 void printColorData();
 
+void scaleColorData(ColorValues *rawData);      // used to scale the RGB values relative to each other a bit
+void scaleColorDataFixedPoint(ColorValues *rawData, FixedPointColorValues *scaledVals);   // scales raw sensor values and returns them as fixed point math values instead of uint16_t
+
 // delay timer for updating sensor data and PID controller for arm
 EventDelay k_i2cUpdateDelay, k_PIDupdate;
-constexpr uint8_t I2C_UPDATE_INTERVAL = 50;
+constexpr uint8_t I2C_UPDATE_INTERVAL = 50;       // time in milliseconds
 
-const uint8_t PID_DIVISOR = 2;
+// used to only update PID every few cycles of updateControl(). More frequent updates lead to better movement control, but take up too much processing power
+const uint8_t PID_DIVISOR = 2;                    
 constexpr uint8_t PID_HZ = MOZZI_CONTROL_RATE / (float)PID_DIVISOR;
 
 
@@ -164,69 +169,26 @@ uint8_t getButtonPressed(uint16_t buttonPinVal);    // pass an analog reading on
 // Mozzi stuff
 // **********************************************************************************
 
-// Oscil <2048, MOZZI_AUDIO_RATE> aSin(SIN2048_DATA);
-// Oscil <2048, MOZZI_CONTROL_RATE> kVib(SIN2048_DATA);
-// float centre_freq = 440.0;
-// float depth = 5.0;
-// float vibratoFreq = 221.0;
+// Oscil Wash example sketch stuff
 
-// global gain controls
-constexpr uint8_t MAX_GLOBAL_GAIN = 255;   // maximum global gain value
-// uint8_t globalGain = 12;           // global gain value for changing total volume output. non-linear changes in volume
-// IntMap k_GlobalGainMap(0, 255, 0, MAX_GLOBAL_GAIN);     // maps potentiometer value to be within 0-MAX_GLOBAL_GAIN so you don't blow your ears out
+Oscil<SAW2048_NUM_CELLS, MOZZI_AUDIO_RATE> aSaw2(SAW2048_DATA);
+Oscil<SAW2048_NUM_CELLS, MOZZI_AUDIO_RATE> aSaw3(SAW2048_DATA);
+Oscil<SAW2048_NUM_CELLS, MOZZI_AUDIO_RATE> aSaw4(SAW2048_DATA);
 
+// volume controls
+Oscil<COS8192_NUM_CELLS, MOZZI_CONTROL_RATE> kVol2(COS8192_DATA);
+Oscil<COS8192_NUM_CELLS, MOZZI_CONTROL_RATE> kVol3(COS8192_DATA);
+Oscil<COS8192_NUM_CELLS, MOZZI_CONTROL_RATE> kVol4(COS8192_DATA);
 
-// EventDelay k_printTimer, k_chordChangeTimer;
-
-bool newColorData = false;      // flag to indicate that new color data is ready for use
-int8_t currentArmPosition = 0; // current arm position in millimeters from center of table
-
-IntMap map_GreenToVol(0, 4095, 0, 255), map_BlueToVol(0, 4095, 0, 255), map_RedToVol(0, 4095, 0, 255);
-
-uint8_t mappedGreen = 0, mappedBlue = 0, mappedRed = 0;
+// audio volumes updated each control interrupt and reused in audio till next control
+// CHANGE THIS: these are stored as char currently, which is archaic and weird. test with uint8_t
+char v2, v3, v4;
 
 
 // **********************************************************************************
 // Music stuff
 // **********************************************************************************
 
-// Oscil Wash example sketch stuff
-
-// harmonics
-Oscil<COS8192_NUM_CELLS, MOZZI_AUDIO_RATE> aCos1(COS8192_DATA);
-Oscil<COS8192_NUM_CELLS, MOZZI_AUDIO_RATE> aCos2(COS8192_DATA);
-Oscil<COS8192_NUM_CELLS, MOZZI_AUDIO_RATE> aCos3(COS8192_DATA);
-Oscil<COS8192_NUM_CELLS, MOZZI_AUDIO_RATE> aCos4(COS8192_DATA);
-// Oscil<COS8192_NUM_CELLS, MOZZI_AUDIO_RATE> aCos5(COS8192_DATA);
-// Oscil<COS8192_NUM_CELLS, MOZZI_AUDIO_RATE> aCos6(COS8192_DATA);
-// Oscil<COS8192_NUM_CELLS, MOZZI_AUDIO_RATE> aCos7(COS8192_DATA);
-// Oscil<COS8192_NUM_CELLS, MOZZI_AUDIO_RATE> aCos8(COS8192_DATA);
-
-// volume controls
-Oscil<COS8192_NUM_CELLS, MOZZI_CONTROL_RATE> kVol1(COS8192_DATA);
-Oscil<COS8192_NUM_CELLS, MOZZI_CONTROL_RATE> kVol2(COS8192_DATA);
-Oscil<COS8192_NUM_CELLS, MOZZI_CONTROL_RATE> kVol3(COS8192_DATA);
-Oscil<COS8192_NUM_CELLS, MOZZI_CONTROL_RATE> kVol4(COS8192_DATA);
-// Oscil<COS8192_NUM_CELLS, MOZZI_CONTROL_RATE> kVol5(COS8192_DATA);
-// Oscil<COS8192_NUM_CELLS, MOZZI_CONTROL_RATE> kVol6(COS8192_DATA);
-// Oscil<COS8192_NUM_CELLS, MOZZI_CONTROL_RATE> kVol7(COS8192_DATA);
-// Oscil<COS8192_NUM_CELLS, MOZZI_CONTROL_RATE> kVol8(COS8192_DATA);
-
-// audio volumes updated each control interrupt and reused in audio till next control
-char v1,v2,v3,v4,v5,v6,v7,v8;
-
-
-/*/
-// harmonics
-Oscil<COS8192_NUM_CELLS, MOZZI_AUDIO_RATE> aCos1(COS8192_DATA);
-Oscil<COS8192_NUM_CELLS, MOZZI_AUDIO_RATE> aCos2(COS8192_DATA);
-Oscil<COS8192_NUM_CELLS, MOZZI_AUDIO_RATE> aCos3(COS8192_DATA);
-Oscil<COS8192_NUM_CELLS, MOZZI_AUDIO_RATE> aCos4(COS8192_DATA);
-// Oscil<COS8192_NUM_CELLS, MOZZI_AUDIO_RATE> aCos5(COS8192_DATA);
-
-// base pitch frequencies in Q16n16 fixed int format (for speed later)
-UFix<12,15> f1,f2,f3,f4;
-*/
 // an array of 4 pointers to const char* strings that define up to four notes in a chord
 struct Chord {
   const char* notes[4];
@@ -249,29 +211,20 @@ Chord chordProgression[4] = {Am, C, F, Em};
 Chord chordProgressionVaried[4] = {Am7, Cadd9, Fm6, Em7};
 Chord chordProgressionCombined[8] = {Am, Am7, C, Cadd9, F, Fm6, Em, Em7};     // might do a probabilistic version of this where it's like 75% the normal notes, 25% the augmented ones
 
-
-IntMap k_redChannelVibMap(0, 32767, 80, 2000);       // signed int, max value of 32767
-IntMap k_potToFreq(0, 1023, 80, 400);
-
-
 void convertArray_NoteNumbersToNames(const uint8_t midiNotes[], uint8_t numNotes, const char* noteNames[]);
 void convertArray_NoteNamesToNumbers(const char* noteNames[], uint8_t numNotes, uint8_t midiNotes[]);
 uint8_t snapToNearestNote(uint8_t inputValue, const uint8_t notes[], uint8_t numNotes);
 void setFreqsFromChord(const Chord& chord, UFix<12,15>& f1, UFix<12,15>& f2, UFix<12,15>& f3, UFix<12,15>& f4);
 const char* getNoteFromArpeggio(const char* notes[], uint8_t numNotes, uint8_t selector);
-
-
+uint8_t noteNameToMIDINote(const char* noteName);          // convert note names to MIDI note numbers (e.g., F#2 -> 42)
+const char* MIDINoteToNoteName(uint8_t note);     // convert MIDI note to note name (e.g., 42 -> F#2)
 
 
 const char* testArp[8] = {"C2", "E3", "A3", "G4", "C4", "F4", "G#4", "D5"};
 
-// going to tie this into the red color channel
 const uint8_t numNotesInScale = 15;
 const char* scale_EbPentatonicMinor[numNotesInScale] = {"D#2", "F#2", "G#2", "A#2", "C#3", "D#3", "F#3", "G#3", "A#3", "C#4", "D#4", "F#4", "G#4", "A#4", "C#5"};
 uint8_t scaleNumbers_EbPentatonicMinor[numNotesInScale];
-
-
-
 
 
 // **********************************************************************************
@@ -286,15 +239,12 @@ void setup()
   // start the I2C bus
   Wire.begin(); 
 
-  // Calibrate the encoders before Mozzi starts. Calibration relies on stock analogRead(),
-  // which is blocking. 
   tableEncoder.begin();
-  // tableEncoder.setDirection(AS5600_COUNTERCLOCK_WISE);
   tableEncoder.resetCumulativePosition();    // calibrate to 0 as starting position for the table
   armEncoder.begin();
   
-  tableEncoder.setHysteresis(11);
-  armEncoder.setHysteresis(11);
+  tableEncoder.setHysteresis(11);            // value has to change by +- 3 before getting reported as change by sensor
+  armEncoder.setHysteresis(11);              // helps remove noise from sensor data
 
 
   // Now home the arm. This moves the arm back to the center of the table by the end of the routine,
@@ -303,11 +253,7 @@ void setup()
 
   currentArmPosition = armAngleToRadius(armEncoder.getCumulativePosition());
 
-  // set up the color sensor over i2c.
-  // I haven't tested this, but I think we need to set up the color sensor last, after the encoders. This is because the
-  // .begin() function for the color sensor has its parameter set to true, which commands the begin function to set the
-  // I2C bus to fast mode, which runs at 400kHz instead of 100kHz default. I found that setting the I2C bus to fast mode
-  // only works if we do it after the sensor is connected. Fast mode reduces latency, which is essential for Mozzi.
+
   if (!RGBCIR.begin(false)) {          // set parameter to true to use i2c fast mode (400kHz instead of 100kHz)                           
     SERIAL_PRINTLN("ERROR: couldn't detect the sensor");
     while (1){}            
@@ -319,15 +265,16 @@ void setup()
   // Configure the color sensor.
   RGBCIR.reset();
   RGBCIR.enable();
-  RGBCIR.setGain(32, false);     // Set gain to x96, use double diode sensing area (increases sensitivity)
+  // possible gain settings are 1, 4, 8, 32, 96. setting the second parameter to true doubles the diode sensing area, which increases sensitivity
+  RGBCIR.setGain(32, false);     
   /**
    * Both the total time it takes to convert a color reading into values and the resolution of that data are set
-   * by the value of a single byte, which you can set with setResolutionAndConversionTime(). The resolutoin and
+   * by the value of a single byte, which you can set with setResolutionAndConversionTime(). The resolution and
    * conversion time are interdependent, so it's difficult to know what time and resolution you are going to get
    * by the value you set the byte to. Open CLS16D24.h, and at the bottom you will find a large comment that shows
    * all possible values for conversion time and resolution.
   */
-  RGBCIR.setResolutionAndConversionTime(0x01);
+  RGBCIR.setResolutionAndConversionTime(0x02);
   SERIAL_PRINT("Conversion time: ");
   conversionTime = RGBCIR.getConversionTimeMillis();
   SERIAL_PRINTLN(conversionTime);  // Calculates the conversion time determined by setResolutionAndConversionTime()
@@ -335,6 +282,13 @@ void setup()
   SERIAL_PRINTLN(RGBCIR.getResolution());            // Calculates resolution determined by setResolutionAndConversionTime()
 
   // Define which color channels to update here. Set to true to enable that color channel.
+  // This is a bit of an artifact from using the VEML3328 color sensor, instead of the CLS-16D24 that I'm using now.
+  // It turned out that the VEML3328 could only reliably update one color channel at a time, with something like 50ms
+  // intervals between updates, so I had to come up with a way to automatically cycle through the color channels and update
+  // each one sequentially. That's originally what this was for, but I wound up using it in the printColorData() function 
+  // as well, and it could potentially be useful for enabling or disabling the effects of color channels on the synth. 
+  // However, this is probably too complex. The CLS-16D24 updates all 5 channels simultaneously and much more rapidly, so I'll
+  // probably just remove this feature eventually.
   updateChannels[static_cast<int>(ColorChannels::RED)] = true;
   updateChannels[static_cast<int>(ColorChannels::GREEN)] = true;
   updateChannels[static_cast<int>(ColorChannels::BLUE)] = true;
@@ -352,68 +306,29 @@ void setup()
   
   // EXPERIMENTAL:
   // I noticed that if I try to use PWM dimming for the LEDs on the color sensor I get audible noise, so this is experimental.
-  // There's a chance that changing Timer 2's clock divisor will mess up Mozzi functions I'm not aware of.
+  // There's a chance that changing Timer 2's clock divisor will mess up Mozzi functions I'm not aware of. So far it hasn't though.
   if (USE_LED_PWM) {
     setPwmFrequency(11, 1);   // set Timer2 to clock divisor of 1 (clock rate 31250Hz now, above audible range)
-    analogWrite(LED_PIN, 128);    // set the brightness for the LEDs
+    analogWrite(LED_PIN, 192);    // set the brightness for the LEDs
   } else {
     digitalWrite(LED_PIN, HIGH);  // just turn the color sensor LEDs on at full brightness
   }
 
-  
-
-  uint16_t tableSpeed = analogRead(POT_B_PIN);
-  tableMotor.setSpeed(convertPotValToTableSpeed(tableSpeed));
-
-
-  
-  
-  // setFreqsFromChord(chordProgression[1], f1, f2, f3, f4);
-  
-  // set Oscils with chosen frequencies
-  // aCos1.setFreq(f1);
-  // aCos2.setFreq(f2);
-  // aCos3.setFreq(f3);
-  // aCos4.setFreq(f4);
-  // aCos5.setFreq(f5);
-  
   // the scaleNumers_EbPentatonicMinor array needs to be initialized
   convertArray_NoteNamesToNumbers(scale_EbPentatonicMinor, numNotesInScale, scaleNumbers_EbPentatonicMinor);
   
-  
-  // finally, start the timers
-  // k_printTimer.set(100);
-  k_i2cUpdateDelay.set(I2C_UPDATE_INTERVAL);
-  k_PIDupdate.set(1000 / PID_HZ);
-  // k_chordChangeTimer.set(500);
-  // k_chordChangeTimer.start();
-  
-  
   // Oscil wash example sketch stuff
   // set harmonic frequencies
-  // aCos1.setFreq(mtof(60));
-  aCos2.setFreq(mtof(noteNameToMIDINote("E2")));
-  aCos3.setFreq(mtof(noteNameToMIDINote("A3")));
-  aCos4.setFreq(mtof(noteNameToMIDINote("B4")));
-  // aCos5.setFreq(mtof(67));
-  // aCos6.setFreq(mtof(81));
-  // aCos7.setFreq(mtof(60));
-  // aCos8.setFreq(mtof(84));
+  aSaw2.setFreq(mtof(noteNameToMIDINote("E2")));
+  aSaw3.setFreq(mtof(noteNameToMIDINote("A3")));
+  aSaw4.setFreq(mtof(noteNameToMIDINote("B4")));
+  v2 = v3 = v4 = 127;
   
-// set volume change frequencies
-  // kVol1.setFreq(4.43f); // more of a pulse
-  // kVol2.setFreq(0.0245f);
-  // kVol3.setFreq(0.019f);
-  // kVol4.setFreq(0.07f);
-  // kVol5.setFreq(0.047f);
-  // kVol6.setFreq(0.031f);
-  // kVol7.setFreq(0.0717f);
-  // kVol8.setFreq(0.041f);
-  
-  v1=v2=v3=v4=v5=v6=v7=v8=127;
+  // finally, start the timers
+  k_i2cUpdateDelay.set(I2C_UPDATE_INTERVAL);      // control how frequently we poll the sensors on the I2C bus (color sensor, both encoders)
+  k_PIDupdate.set(1000 / PID_HZ);                 // update rate for the PID controller that manages the arm position
   
   // start Mozzi
-  // kVib.setFreq(vibratoFreq);
   startMozzi(MOZZI_CONTROL_RATE);
 }
 
@@ -426,24 +341,32 @@ void setup()
 // **********************************************************************************
 
 void updateControl() {
-  newColorData = false;
-  static uint8_t chordIterator = 0;
-  static uint8_t PIDupdateIterator = 0;
   static int8_t targetArmPos = 80;
+
+  // these are auto-ranging mappings for the color channels. These work a lot like the normal map() function, except that they keep track of the 
+  // largest and smallest values that they have seen so far, and update the map to reflect those. So the first two parameters are the minimum and
+  // maximum possible input values (if this were a standard analogRead(), that would be 0 and 1023). As you update the function, it keeps track of
+  // the mapping value you provide it, and the min and max values it has seen become the new min and max values for the input map range. Note that
+  // the parameters are ints, so signed 16 bit values, and you have to be sure the numbers you pass into the parameters will fit in that variable size.
+  //
+  // The reason these are static variables inside updateControl() instead of being global is that I wanted to use the RGBCIR.getResolution() function
+  // to be able to set the size of the mapping, rather than hardcoding the value. That way the maps get dynamically resized based on the chosen 
+  // resolution of the sensor. 
+  static AutoMap autoGreenToVolume(0, RGBCIR.getResolution(), 0, 255);
+  static AutoMap autoBlueToVolume(0, RGBCIR.getResolution(), 0 , 255);
+  static AutoMap autoRedToVolume(0, RGBCIR.getResolution(), 0, 255);
 
   // check to see if buttons are pressed
   buttonPressed = getButtonPressed(mozziAnalogRead<10>(BUTTONS_PIN));
   
   if (k_i2cUpdateDelay.ready()) {
-    // SERIAL_PRINT(buttonPressed); SERIAL_PRINT("     ");
     currentArmPosition = armAngleToRadius(armEncoder.getCumulativePosition());
     tableDC = tableDCFilter.next(tableEncoder.getCumulativePosition() * 4);
-    newColorData = updateColorReadings(&colorData);
-    // SERIAL_PRINT(String((float)v1)); SERIAL_PRINT(" ");
-    // SERIAL_PRINT(String((float)v2)); SERIAL_PRINT(" "); 
-    // SERIAL_PRINT(String((float)v3)); SERIAL_PRINT(" ");
-    // SERIAL_PRINTLN(String((float)v4));
-    k_i2cUpdateDelay.start();
+    updateColorReadings(&colorData);
+    // scaleColorData(&colorData);       // scale the blue and red channels to bring them in line with green channel (essential white balance correction)
+    k_i2cUpdateDelay.start();            // restart the timer immediately after new color data is acquired
+    scaleColorDataFixedPoint(&colorData, &scaledFixedColorData);
+    printColorData();
   }
   
   if (k_PIDupdate.ready()) {
@@ -451,63 +374,31 @@ void updateControl() {
     moveArmToRadius(targetArmPos, currentArmPosition);
     k_PIDupdate.start();
   }
-
   
   // now deal with controlling the table motion. Eventually I'm going to use the DC filter to watch the motion of the table.
   // If the program expects it to be moving, but the DC filter shows that it has stopped, the program will stop the drive
   // motor. Basically this will let you dynamically stop the table by grabbing it. If the table then moves again, the program
   // will start the table motor up.  
-  constexpr int8_t tableDChysteresis = 5;
   int16_t targetTableSpeed = convertPotValToTableSpeed(mozziAnalogRead<10>(POT_B_PIN));
 
-  tableDC = (tableDC < -tableDChysteresis || tableDC > tableDChysteresis) ? tableDC : 0;    // add some hysteresis
+  tableDC = (tableDC < -DCMovementThreshold || tableDC > DCMovementThreshold) ? tableDC : 0;    // add some hysteresis
   // SERIAL_PRINTLN(tableDC);
 
   tableMotor.setSpeed(targetTableSpeed);
 
-
-  
-  
-  // update colors as needed (update interval determined by k_i2cUpdateDelay)
-  // if (k_i2cUpdateDelay.ready()) {
-  //   newColorData = updateColorReadings(&colorData);
-  //   k_i2cUpdateDelay.start();
-  // }
-  // if there is new color data, print it to the monitor
-  if (newColorData) {
-    printColorData();
-  }
-
-  mappedGreen = map_GreenToVol((colorData.green - 512) * 2);
-  mappedBlue = map_BlueToVol(colorData.blue * 4);
-  mappedRed = map_RedToVol(colorData.red * 2);
+  // AutoMap instances that handle the color data mapping to control signals
+  mappedGreen = autoGreenToVolume(scaledFixedColorData.greenFixed.asInt());
+  mappedBlue = autoBlueToVolume(scaledFixedColorData.blueFixed.asInt());
+  mappedRed = autoRedToVolume(scaledFixedColorData.redFixed.asInt());
 
   // oscil wash example sketch stuff
-  // v1 = kVol1.next()>>1; // going at a higher freq, this creates zipper noise, so reduce the gain
-  // v2 = kVol2.next();
   v2 = mappedGreen;
-  // v3 = kVol3.next();
   v3 = mappedBlue;
   v4 = mappedRed;
-  // v4 = kVol4.next();
-  // v4 = map(colorData.green,0, 2048, -1024, 1024);
-  // v5 = kVol5.next();
-  // v6 = kVol6.next();
-  // v7 = kVol7.next();
-  // v8 = kVol8.next();
 
-
-
-  // this is the sound stuff I had working for a bit
-  // play with this bit shift number to see what value brings the color data into a good audible range
-  // uint8_t downsampledRed = colorData.red >> 7;   
-  // uint8_t downsampledGreen = colorData.green >> 8;
-  // uint8_t downsampledBlue = colorData.blue >> 7;
-  // aCos1.setFreq(mtof(snapToNearestNote(downsampledRed, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
-  // aCos2.setFreq(mtof(snapToNearestNote(downsampledGreen, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
-  // aCos3.setFreq(mtof(snapToNearestNote(downsampledBlue, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
-  // aCos4.setFreq(0);
-
+  aSaw2.setFreq(mtof(snapToNearestNote((mappedBlue >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
+  aSaw3.setFreq(mtof(snapToNearestNote((mappedRed >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
+  aSaw4.setFreq(mtof(snapToNearestNote((mappedGreen >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
 }
 
 
@@ -520,56 +411,14 @@ void updateControl() {
 // **********************************************************************************
 
 AudioOutput_t updateAudio() {
-  // 8 bit sine osc * 8 bit globalGain makes 16 bits total (2^8 * 2^8 = 2^(8+8) = 2^16). 
-  // We need to generate audio output, and Mozzi has a few functions for doing that.
-  // One is MonoOutput::from8Bit. If we want to use that, we have to bring everything back
-  // into 8 bit from 16 by shifting right by 8 places (divide by 2^8) to bring this back to 8 bit.
-  // that would work like the following:
-  // return MonoOutput::from8Bit((aSin.next() * globalGain)>>8);             
-
-  // Or, there's MonoOutput::from16Bit, which we can just use directly without shifting:
-  // return MonoOutput::from16Bit((aSin.next() * globalGain));
-
-  /*
-  This is letting Mozzi compute the number of bits for you.
-  The syntax is a bit more cumbersome but FixMath will be
-  clever enough to figure out the exact number of bits needed
-  to create asig without any overflow, but no more.
-  This number of bits will be used by Mozzi for right/left shifting
-  the number to match the capability of the system.
-*/
-  
-  /*
-  auto asig = 
-  (toSFraction(aCos1.next())) +
-  toSFraction(aCos2.next()) + 
-  toSFraction(aCos3.next());
-  // toSFraction(aCos4.next());
-
-  auto vol = UFix<8, 0>(globalGain);
-  
-  // toSFraction(aCos6.next()) + toSFraction(aCos6b.next()); /* +
-    // toSFraction(aCos7.next()) + toSFraction(aCos7b.next()) +
-  return MonoOutput::fromSFix(asig * vol);
-  */
-
-
   // oscil wash example sketch stuff
   long asig = (long)
-    // aCos1.next()*v1 +
-    aCos2.next() * v2 + 
-    aCos3.next() * v3 +
-    aCos4.next() * v4;
-    // aCos5.next()*v5 +
-    // aCos6.next()*v6;
-    // aCos7.next()*v7 +
-    // aCos8.next()*v8;
-  // asig = 0;
+    aSaw2.next() * v2 + 
+    aSaw3.next() * v3 +
+    aSaw4.next() * v4;
+
   return MonoOutput::fromAlmostNBit(17, asig);
-
 }
-
-
 
 
 // **********************************************************************************
@@ -627,13 +476,6 @@ void homeArm(int16_t startingPosition) {
   armMotor.setSpeed(0);
   armEncoder.resetCumulativePosition(661);
   delay(1000);
-
-  
-  // finally, slowly bring the sensor arm directly over the center of the table
-  // armMotor.setSpeed(-128);
-  // while (armEncoder.getCumulativePosition() > startingPosition) {};   // run motor toward 0 until it's reached
-  // armMotor.setSpeed(0);
-  // armEncoder.resetCumulativePosition(startingPosition);
 }
 
 /**
@@ -761,25 +603,32 @@ void printColorData() {
     // SERIAL_PRINT("Blue:");
     channels.b = true;
     // SERIAL_PRINT(colorData.blue);
+    // SERIAL_PRINT(scaledFixedColorData.blueFixed.asInt());
     SERIAL_PRINT(mappedBlue);
   }
-  if (updateChannels[static_cast<int>(ColorChannels::IR)]) {
-    if (!first) SERIAL_PRINT("   "); else first = false;
-    // SERIAL_PRINT("IR:");
-    channels.ir = true;
-    SERIAL_PRINT(colorData.IR);
-  }
+  
   if (updateChannels[static_cast<int>(ColorChannels::CLEAR)]) {
     if (!first) SERIAL_PRINT("   "); else first = false;
     // SERIAL_PRINT("Clear:");
     channels.c = true;
-    SERIAL_PRINT(colorData.clear);
+    // SERIAL_PRINT(colorData.clear);
+    SERIAL_PRINT(scaledFixedColorData.clearFixed.asInt());
   }
+
+  if (updateChannels[static_cast<int>(ColorChannels::IR)]) {
+    if (!first) SERIAL_PRINT("   "); else first = false;
+    // SERIAL_PRINT("IR:");
+    channels.ir = true;
+    // SERIAL_PRINT(colorData.IR);
+    SERIAL_PRINT(scaledFixedColorData.IRFixed.asInt());
+  }
+  
   if (updateChannels[static_cast<int>(ColorChannels::GREEN)]) {
     if (!first) SERIAL_PRINT("   "); else first = false;
     // SERIAL_PRINT("Green:");
     channels.g = true;
     // SERIAL_PRINT(colorData.green);
+    // SERIAL_PRINT(scaledFixedColorData.greenFixed.asInt());
     SERIAL_PRINT(mappedGreen);
   }
   if (updateChannels[static_cast<int>(ColorChannels::RED)]) {
@@ -787,6 +636,7 @@ void printColorData() {
     // SERIAL_PRINT("Red:");
     channels.r = true;
     // SERIAL_PRINT(colorData.red);
+    // SERIAL_PRINT(scaledFixedColorData.redFixed.asInt());
     SERIAL_PRINT(mappedRed);
   }
   // if (channels.r && channels.g && channels.b && channels.c) {
@@ -798,61 +648,7 @@ void printColorData() {
   SERIAL_PRINTLN();
 }
 
-/*/
 
-
-// this will run for the first iteration to prime the mozziAnalogRead buffers.
-// this is necessary because of the way mozziAnalogRead asynchronously handles the ADC.
-// This has to be done at the start of updateControl() rather than during setup() because
-// mozziAnalogRead relies on interrupts generated during updateControl to actually start
-// and gather analog readings. 
-// This block also moves the color sensor to the starting position over the edge of the
-// table and primes the buffer for the 5 color sensor channels as well. This way we can
-// start the audio generation with clean sensor values, instead of values that start
-// at 0 and drastically jump to the actual value. 
-bool initializationRoutine() {
-  tableEncoder.getCumulativePosition();
-  armEncoder.getCumulativePosition();
-  // mozziAnalogRead<10>(POT_A_PIN);
-  // mozziAnalogRead<10>(POT_B_PIN);
-  // mozziAnalogRead<10>(BACK_POT_PIN);
-
-  SERIAL_PRINT(currentArmPosition);
-  SERIAL_PRINT("   measured: ");
-  SERIAL_PRINT(armEncoder.getCumulativePosition());
-  SERIAL_PRINT("   calculated: ");
-  SERIAL_PRINTLN(armDistanceToAngle(currentArmPosition));
-  
-  armMotor.setSpeed(-255);
-  // bring the color sensor over the edge of the table
-
-
-  if (currentArmPosition <= 70) {
-    armMotor.setSpeed(0);
-    // turn on the LED to illuminate the scene for the color sensor
-    digitalWrite(LED_PIN, HIGH);
-
-    // now prime buffer for the values for all 5 color sensor channels
-    SERIAL_PRINTLN("here");
-    for (int i = 0; i < 10; ) {
-      SERIAL_PRINT("here now "); SERIAL_PRINTLN(i);
-      if (k_i2cUpdateDelay.ready()) {
-        newColorData = updateColorReadings(&colorData);
-        k_i2cUpdateDelay.start();
-        // rotate to updating the next color channel - only one gets updated each loop
-        currentColorChannel = static_cast<ColorChannels>((static_cast<int>(currentColorChannel) + 1) % 5);
-        i++;
-      }
-    }
-    // start the table spinning
-    tableMotor.setSpeed(255);
-    return false;   // initialization is finished, so we'll stop running this routine
-  }
-  // initialization isn't finished yet, so return true
-  return true;
-}
-
-*/
 
 // this returns the MIDI note number for any note from C-1 to G9 (MIDI notes 0 through 127).
 // Pass the note name as a string into the parameter. E.g., "D#-1" returns 3, or "F#2" returns 42.
@@ -1108,4 +904,31 @@ uint8_t getButtonPressed(uint16_t buttonPinVal) {
       return 255;             // any other value means that no button has stabilized or is pressed
       break;
   }
+}
+
+
+
+/**
+ * used to scale RGB color data relative to each other. I did some testing with a Spyder Checkr 24 color balance
+ * checking card used by photographers to figure out these values. Specifically, there is a row of 6 squares that
+ * fade from pure white to pure black over several steps of grey. I put each of these under the color sensor, and 
+ * then looked for multipliers for the blue and red channels that would bring them up to the same level as the green
+ * channel, which is generally the most sensitive and shows the strongest response. Using these scaled values has made
+ * more intuitive sense to me when comparing what the sensor is looking at with what the values it reports. So now, 
+ * generally, when the sensor is over a strong red, the red channel with report the largest value; same for green and blue. 
+ * Before, the green channel was often still reporting higher values than the others, even over a strong blue color. 
+ * If you look in the datasheet for the sensor, you can see the response curves, and the green channel is just more sensitive.
+ */
+void scaleColorData(ColorValues *rawData) {
+  rawData->red = (rawData->red * 7) >> 2;     // this is the same as multiplying the red channel by 1.75, but done with faster math operations
+  rawData->blue = ((uint32_t)rawData->blue * 157286UL) >> 16; // this closely approximates multiplying blue by 2.4 (2.4 is 12/5, and you can approximate 1/5 with 51 >> 8) 
+  rawData->IR = rawData->IR << 3;
+}
+
+void scaleColorDataFixedPoint(ColorValues *rawData, FixedPointColorValues *scaledVals) {
+  scaledVals->redFixed = UFix<16, 0>((rawData->red * 7) >> 2);
+  scaledVals->greenFixed = UFix<16, 0>(rawData->green);
+  scaledVals->blueFixed = UFix<16, 0>(((uint32_t)rawData->blue * 157286UL) >> 16);
+  scaledVals->clearFixed = UFix<16, 0>(rawData->clear);
+  scaledVals->IRFixed = UFix<16, 0>(rawData->IR << 3);
 }
