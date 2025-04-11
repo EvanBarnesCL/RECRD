@@ -1,3 +1,19 @@
+/**
+ * To Do: 
+ * - scale the color data using FixMath operations instead of fancy bit shifting stuff. will make it easier for users to tune the scaling if they want
+ * - try not using PID again for the arm controller
+ * - try a version where the arm moves in 20mm wide tracks across the table, set by the knob
+ * - I figured out that the volume variables were type char in the example, which is int8_t. Using uint8_t increases overall volume, but also starts
+ *    the synth with obnoxious loud sounds immediately. 
+ * - figure out why the arm positioning math isn't working correctly
+ * - come up with more interesting synth sounds
+ * - instead of just setting the frequencies of three oscs, use color channels to change chords and things
+ * - trying sampling color data as a waveform
+ */
+
+
+
+
 // if this is defined, the PWM rate for Timer 0 is 62.5kHz, which removes audible PWM noise from driving motors.
 // It has a few side effects. It breaks any use of millis(). delay() also will not work, but I plan to avoid
 // the use of both of those any time Mozzi is running anyway, so this might be fine! So far this hasn't affected
@@ -6,7 +22,7 @@
 
 
 #define USE_FAST_PWM 1        // set to 1 to change the PWM clock divisor for pins 5 and 6 (timer 0) - removes motor noise from audio
-#define USE_LED_PWM  1        // set to 1 to change the PWM clock divisor for pins 3 and 11 (timer 2) - removes PWM noise due to LED dimming
+#define USE_LED_PWM  1        // set to 1 to change the PWM clock divisor for pins 3 and 11 (timer 2) - removes PWM noise due to LED dimming from audio
 
 
 #include <Arduino.h>
@@ -16,8 +32,6 @@
 #define MOZZI_CONTROL_RATE 128      // Frequency of updateControls() calls
 #include <Mozzi.h>                  // Main synthesizer library
 #include <Oscil.h>                  // Oscillator
-#include <tables/sin2048_int8.h>    // Sine wavetable
-#include <tables/cos8192_int8.h>    // Cosine wavetable
 #include <tables/saw2048_int8.h>    // Saw wavetable
 #include <IntMap.h>                 // A more efficient replacement for map()
 #include <EventDelay.h>             // Mozzi library for performing actions at specific time intervals without delay() or millis()
@@ -175,15 +189,20 @@ Oscil<SAW2048_NUM_CELLS, MOZZI_AUDIO_RATE> aSaw2(SAW2048_DATA);
 Oscil<SAW2048_NUM_CELLS, MOZZI_AUDIO_RATE> aSaw3(SAW2048_DATA);
 Oscil<SAW2048_NUM_CELLS, MOZZI_AUDIO_RATE> aSaw4(SAW2048_DATA);
 
-// volume controls
-Oscil<COS8192_NUM_CELLS, MOZZI_CONTROL_RATE> kVol2(COS8192_DATA);
-Oscil<COS8192_NUM_CELLS, MOZZI_CONTROL_RATE> kVol3(COS8192_DATA);
-Oscil<COS8192_NUM_CELLS, MOZZI_CONTROL_RATE> kVol4(COS8192_DATA);
-
 // audio volumes updated each control interrupt and reused in audio till next control
-// CHANGE THIS: these are stored as char currently, which is archaic and weird. test with uint8_t
-char v2, v3, v4;
-
+// well this is wild. The original example sketch I built this from used char as the datatype, which is not something that
+// should ever be used except for storing characters of text. A lot of older Arduino sketches use char when a more appropriate
+// datatype would be byte, or even better, uint8_t. The problem with char is that it's not rigorously defined. On some 
+// platforms like ARM, it's usually an unsigned 8 bit integer, but apparently, on the AVR microcontrollers in the Arduino 
+// environment, it's actually a signed 8 bit integer. So for this program, I have been mapping color data into volume controls
+// into a range of 0 - 255, as though volume were a uint8_t. But it's actually been overflowing and wrapping around to the range
+// -127 to 127 to fit into char/int8_t. For now, I'm actually going to leave the volume variables as int8_t. It produces a nice
+// effect where the synth doesn't really start producing sound until the AutoMaps have picked up enough data to start ranging
+// correctly for the color data, since the volume gets centered on 0. I can set this variable to uint8_t, and one nice effect
+// of that is that the volume is much louder, but it also starts making noise immediately. It's unpleasant sounding until the
+// AutoMaps kick in and start ranging things correctly. I could fix this by adding some kind of volume fade that runs when the
+// program boots up, but I like that with int8_t, it's adaptive to the actual color data it receives and isn't time based.
+int8_t v2, v3, v4;
 
 // **********************************************************************************
 // Music stuff
@@ -353,7 +372,7 @@ void updateControl() {
   // to be able to set the size of the mapping, rather than hardcoding the value. That way the maps get dynamically resized based on the chosen 
   // resolution of the sensor. 
   static AutoMap autoGreenToVolume(0, RGBCIR.getResolution(), 0, 255);
-  static AutoMap autoBlueToVolume(0, RGBCIR.getResolution(), 0 , 255);
+  static AutoMap autoBlueToVolume(0, RGBCIR.getResolution(), 0, 255);
   static AutoMap autoRedToVolume(0, RGBCIR.getResolution(), 0, 255);
 
   // check to see if buttons are pressed
@@ -412,7 +431,7 @@ void updateControl() {
 
 AudioOutput_t updateAudio() {
   // oscil wash example sketch stuff
-  long asig = (long)
+  int32_t asig = (int32_t)
     aSaw2.next() * v2 + 
     aSaw3.next() * v3 +
     aSaw4.next() * v4;
@@ -639,12 +658,9 @@ void printColorData() {
     // SERIAL_PRINT(scaledFixedColorData.redFixed.asInt());
     SERIAL_PRINT(mappedRed);
   }
-  // if (channels.r && channels.g && channels.b && channels.c) {
-  //   int32_t combined = colorData.red + colorData.green + colorData.blue;
-  //   int32_t diff = colorData.clear - combined;
-  //   SERIAL_PRINT("    combined (r+g+b) = "); SERIAL_PRINT(combined);
-  //   SERIAL_PRINT("    clear - combined = "); SERIAL_PRINT(diff);
-  // } 
+
+  // SERIAL_PRINT("  "); SERIAL_PRINT(v2);
+
   SERIAL_PRINTLN();
 }
 
