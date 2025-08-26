@@ -112,7 +112,7 @@ int16_t tableDC = 0;                // the value of the DC filter for table move
 // **********************************************************************************
 
 CLS16D24 RGBCIR;
-uint16_t conversionTime = 0;      // time in milliseconds required for the color sensor to acquire new data - changes based on resolution settings
+uint16_t conversionTime = 0;      // time in milliseconds required for the color sensor to acquire new data - changes based on resolution settings. this variable is not currently used.
 
 enum class ColorChannels {
   RED,
@@ -163,7 +163,7 @@ EventDelay k_i2cUpdateDelay, k_PIDupdate;
 constexpr uint8_t I2C_UPDATE_INTERVAL = 50;       // time in milliseconds
 
 // used to only update PID every few cycles of updateControl(). More frequent updates lead to better movement control, but take up too much processing power
-const uint8_t PID_DIVISOR = 2;                    
+const uint8_t PID_DIVISOR = 1;                    
 constexpr uint8_t PID_HZ = MOZZI_CONTROL_RATE / (float)PID_DIVISOR;
 
 
@@ -250,7 +250,7 @@ uint8_t scaleNumbers_EbPentatonicMinor[numNotesInScale];
 // Setup
 // **********************************************************************************
 
-void setup()
+void setup() 
 {
   if (USE_SERIAL) Serial.begin(115200);
   SERIAL_PRINTLN("starting");
@@ -388,12 +388,16 @@ void updateControl() {
     printColorData();
   }
   
-  if (k_PIDupdate.ready()) {
-    targetArmPos = convertPotValToArmRadius(mozziAnalogRead<10>(POT_A_PIN));
-    moveArmToRadius(targetArmPos, currentArmPosition);
-    k_PIDupdate.start();
-  }
+  // if (k_PIDupdate.ready()) {
+  //   targetArmPos = convertPotValToArmRadius(mozziAnalogRead<10>(POT_A_PIN));
+  //   moveArmToRadius(targetArmPos, currentArmPosition);
+  //   k_PIDupdate.start();
+  // }
   
+  targetArmPos = convertPotValToArmRadius(mozziAnalogRead<10>(POT_A_PIN));
+  moveArmToRadius(targetArmPos, currentArmPosition);
+
+
   // now deal with controlling the table motion. Eventually I'm going to use the DC filter to watch the motion of the table.
   // If the program expects it to be moving, but the DC filter shows that it has stopped, the program will stop the drive
   // motor. Basically this will let you dynamically stop the table by grabbing it. If the table then moves again, the program
@@ -826,38 +830,58 @@ int16_t convertPotValToArmRadius(uint16_t potVal) {
 }
 
 int16_t convertPotValToTableSpeed(int16_t potVal) {
+  constexpr uint8_t tableSpeedDeadband = 40;
+  // create a deadband in the potentiometer reading to account for noise around the detent
+  potVal = (potVal > 512 + tableSpeedDeadband || potVal < 512 - tableSpeedDeadband) ? potVal : 512;
   int16_t speed = map(potVal, 0, 1023, -255, 255);
-  return (speed > 5 || speed < -5) ? speed : 0;       // add in a small deadband to account for play in the potentiometer
+  return speed;
 }
 
 
 /**
- * @brief Moves the arm to a specified target radius using PID control
+ * @brief Moves the arm to a specified target radius using bang-bang control.
  * 
- * @details This function implements closed-loop arm position control using the FastPID library.
- * It calculates the appropriate motor speed to reach the target position using PID control.
- * While a simple proportional controller was almost sufficient, integral control was added
- * to eliminate steady state error. The implementation uses FastPID which handles fixed-point
- * math internally for efficient execution on microcontrollers.
- * 
- * Previous implementation:
- * @code
- * int16_t moveArmToRadius(int8_t targetRadius, int8_t currentArmPosition) {
- *   constexpr uint8_t kp = 8;
- *   int16_t error = targetRadius - currentArmPosition;
- *   // if (abs(error < 5)) error = 0;
- *   armMotor.setSpeed(constrain(kp * error, -255, 255));
- * }
- * @endcode
+ * @details This function implements a closed-loop bang-bang arm position controller.
+ * If the arm position is close enough to the target position, the motor is stopped.
+ * Close enough is defined by the deadBand value. If the current position is outside
+ * the deadband range of the target position, then the motor is set to spin full speed
+ * in the appropriate direction. The one extra bit of sauce on this is the acceleration.
+ * If a new target position is specified, the motor speed is not instantly set to the 
+ * new maximum speed to reach that target. Instead it's ramped up quickly over the course
+ * of a few milliseconds. This smooths out the current demanded by the motor. Without
+ * this acceleration, the motor was drawing enough current to make the LEDs on the color
+ * sensor flicker. The acceleration doesn't apply to when the arm hits the target; then
+ * it just cuts to 0 speed instantly.
  * 
  * @param targetRadius The desired arm position in millimeters (radial value, not angular)
  * @param currentRadius The current arm position in millimeters (radial value, not angular)
  * @return void
  */
+
 void moveArmToRadius(int8_t targetRadius, int8_t currentRadius) {
-  static constexpr float kp = 4.0, ki = .20, kd = .50;
-  static FastPID armMotorPID(kp, ki, kd, PID_HZ, 8, true);
-  armMotor.setSpeed(armMotorPID.step(targetRadius, currentRadius));
+  // I need to add a feature that cuts motor speed to 0 when end of range of arm motion is reached. I think sometimes it exceeds the
+  // range that works properly for the angle to distance calculator and causes odd behavior.
+
+  static int16_t lastMotorSpeed = 0, targetMotorSpeed = 0;
+  static uint16_t lastAccelUpdate = 0;
+  constexpr uint8_t deadBand = 2;   // if the current position is within this distance of the target, we reached the target
+  constexpr uint8_t maxMotorSpeed = 240;
+  static int8_t directionVector = 1;
+  // handle motor acceleration
+  int8_t displacement = targetRadius - currentRadius;   // figure out if the target is outside the deadband range of the current position
+  if (abs(displacement) <= deadBand) {
+    targetMotorSpeed = 0;
+  } else {
+    // targetMotorSpeed = (abs(displacement) > deadBand) ? maxMotorSpeed: -1 * maxMotorSpeed;   // set ultimate new target motor speed
+    if (mozziMicros() - lastAccelUpdate >= 1000000) {  // update motor speed every millisecond to provide acceleration
+      directionVector = displacement > 0 ? 1 : -1;
+      targetMotorSpeed = constrain(lastMotorSpeed + (1 * directionVector), -1 * maxMotorSpeed, maxMotorSpeed);
+      lastAccelUpdate = mozziMicros();
+    }
+  }
+
+  armMotor.setSpeed(targetMotorSpeed);
+  lastMotorSpeed = targetMotorSpeed;
 }
 
 
