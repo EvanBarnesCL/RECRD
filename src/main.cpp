@@ -58,14 +58,20 @@
  *  */ 
 #define USE_SERIAL 1
 
+#define USE_SERIAL 1
+
 #if USE_SERIAL
-  #define SERIAL_PRINT(x) Serial.print(x)
-  #define SERIAL_PRINTLN(x) Serial.println(x)
-  #define SERIAL_BEGIN(baud) Serial.begin(baud)
+  #define SERIAL_PRINT(x)     Serial.print(x)
+  #define SERIAL_PRINTLN(x)   Serial.println(x)
+  #define SERIAL_BEGIN(baud)  Serial.begin(baud)
+  #define SERIAL_TAB          Serial.print("\t")
+  #define SERIAL_TABS(x)      for (uint8_t i = 0; i < x; i++) {Serial.print("\t");}
 #else
-  #define SERIAL_PRINT(x) do {} while (0)
-  #define SERIAL_PRINTLN(x) do {} while (0)
-  #define SERIAL_BEGIN(baud) do {} while (0)
+  #define SERIAL_PRINT(x)     do {} while (0)
+  #define SERIAL_PRINTLN(x)   do {} while (0)
+  #define SERIAL_BEGIN(baud)  do {} while (0)
+  #define SERIAL_TAB          do {} while (0)
+  #define SERIAL_TABS         do {} while (0)
 #endif
 
 
@@ -385,7 +391,7 @@ void updateControl() {
     // scaleColorData(&colorData);       // scale the blue and red channels to bring them in line with green channel (essential white balance correction)
     k_i2cUpdateDelay.start();            // restart the timer immediately after new color data is acquired
     scaleColorDataFixedPoint(&colorData, &scaledFixedColorData);
-    printColorData();
+    // printColorData();
   }
   
   // if (k_PIDupdate.ready()) {
@@ -862,24 +868,38 @@ void moveArmToRadius(int8_t targetRadius, int8_t currentRadius) {
   // I need to add a feature that cuts motor speed to 0 when end of range of arm motion is reached. I think sometimes it exceeds the
   // range that works properly for the angle to distance calculator and causes odd behavior.
 
+  static EventDelay accelTimer;
+  static bool initialize = true;
+  constexpr uint8_t accelerationMultiplier = 2; // value added to last motor speed to cause acceleration
+  constexpr uint16_t accelerationInterval = 2;  // milliseconds between speed updates
+  // the first time this function is called, we need to initialize the timer to run at the appropriate interval
+  if (initialize) {
+    accelTimer.set(accelerationInterval);
+    initialize = false;
+  }
+
   static int16_t lastMotorSpeed = 0, targetMotorSpeed = 0;
-  static uint16_t lastAccelUpdate = 0;
   constexpr uint8_t deadBand = 2;   // if the current position is within this distance of the target, we reached the target
   constexpr uint8_t maxMotorSpeed = 240;
   static int8_t directionVector = 1;
+
   // handle motor acceleration
-  int8_t displacement = targetRadius - currentRadius;   // figure out if the target is outside the deadband range of the current position
+  // figure out if the target is outside the deadband range of the current position
+  int16_t displacement = targetRadius - currentRadius;   // this needs to be int16_t so that it doesn't overflow (originally I was using int8_t and had errors)
   if (abs(displacement) <= deadBand) {
     targetMotorSpeed = 0;
   } else {
-    // targetMotorSpeed = (abs(displacement) > deadBand) ? maxMotorSpeed: -1 * maxMotorSpeed;   // set ultimate new target motor speed
-    if (mozziMicros() - lastAccelUpdate >= 1000000) {  // update motor speed every millisecond to provide acceleration
+    if (accelTimer.ready()) {
       directionVector = displacement > 0 ? 1 : -1;
-      targetMotorSpeed = constrain(lastMotorSpeed + (1 * directionVector), -1 * maxMotorSpeed, maxMotorSpeed);
-      lastAccelUpdate = mozziMicros();
+      targetMotorSpeed = constrain((accelerationMultiplier * directionVector) + lastMotorSpeed, -1 * maxMotorSpeed, maxMotorSpeed);
+      // SERIAL_PRINT(targetRadius);
+      // SERIAL_TAB;
+      // SERIAL_PRINT(currentRadius);
+      // SERIAL_TAB;
+      // SERIAL_PRINTLN(directionVector);
+      accelTimer.start();
     }
   }
-
   armMotor.setSpeed(targetMotorSpeed);
   lastMotorSpeed = targetMotorSpeed;
 }
