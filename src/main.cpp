@@ -108,7 +108,7 @@ int8_t currentArmPosition = 0; // current arm position in millimeters from cente
 
 DCfilter armDCFilter(0.95);          // DC filter detects changes in arm position (settles to 0 if the arm is not moving)
 DCfilter tableDCFilter(0.6);        // DC filter for table movement
-constexpr int8_t DCMovementThreshold = 5;   // If the DC filter shows a value between + and - DCMovementThreshold, we know that axis is not moving
+constexpr int8_t DCMovementThreshold = 30;   // If the DC filter shows a value between + and - DCMovementThreshold, we know that axis is not moving
 int16_t tableDC = 0;                // the value of the DC filter for table movement.
 
 
@@ -367,6 +367,13 @@ void setup()
 
 void updateControl() {
   static int8_t targetArmPos = 80;
+  static bool initialize = true;
+  static EventDelay reactToDCTimer;
+  if (initialize) {
+    reactToDCTimer.set(750);
+    reactToDCTimer.start();
+    initialize = false;
+  }
 
   // these are auto-ranging mappings for the color channels. These work a lot like the normal map() function, except that they keep track of the 
   // largest and smallest values that they have seen so far, and update the map to reflect those. So the first two parameters are the minimum and
@@ -409,11 +416,28 @@ void updateControl() {
   // motor. Basically this will let you dynamically stop the table by grabbing it. If the table then moves again, the program
   // will start the table motor up.  
   int16_t targetTableSpeed = convertPotValToTableSpeed(mozziAnalogRead<10>(POT_B_PIN));
+  static int16_t savedTableSpeed = targetTableSpeed;
 
   tableDC = (tableDC < -DCMovementThreshold || tableDC > DCMovementThreshold) ? tableDC : 0;    // add some hysteresis
-  // SERIAL_PRINTLN(tableDC);
+  SERIAL_PRINT(tableDC);
+
+  if (reactToDCTimer.ready()) {
+    if (tableDC == 0) {
+      savedTableSpeed = targetTableSpeed;
+      targetTableSpeed = 0;
+    } else {
+      if (targetTableSpeed == 0) {
+        targetTableSpeed = savedTableSpeed;
+        reactToDCTimer.start();
+      }
+    } 
+  }
+  SERIAL_TAB;
+  SERIAL_PRINTLN(targetTableSpeed);
 
   tableMotor.setSpeed(targetTableSpeed);
+  // tableMotor.setSpeed(targetTableSpeed);
+
 
   // AutoMap instances that handle the color data mapping to control signals
   mappedGreen = autoGreenToVolume(scaledFixedColorData.greenFixed.asInt());
