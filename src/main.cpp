@@ -378,7 +378,7 @@ void updateControl() {
   if (initialize) {
     reactToDCTimer.set(750);
     reactToDCTimer.start();
-    buttonTimer.set(125);    //125ms is exactly 1/16th notes for 120bpm in 4/4
+    buttonTimer.set(100);    //125ms is exactly 1/16th notes for 120bpm in 4/4
     buttonTimer.start();
     initialize = false;
   }
@@ -399,7 +399,7 @@ void updateControl() {
   // check to see if buttons are pressed. returns 0, 1, 2, 255
   // 0 = B1, 1 = B2, 2 = B3, 255 = no press
   // deal with the button presses
-  buttonPressed = getDebouncedButton();
+  buttonPressed = getButtonPressed(mozziAnalogRead<10>(BUTTONS_PIN));
   SERIAL_PRINTLN(buttonPressed);
   if (buttonTimer.ready()) {
     switch (buttonPressed) {
@@ -957,99 +957,50 @@ void moveArmToRadius(int8_t targetRadius, int8_t currentRadius) {
 }
 
 
-uint8_t getDebouncedButton() {
-  constexpr uint8_t DEBOUNCE_THRESHOLD = 4;
-  static uint8_t stableState = 255;    // Current stable value (no press)
-  static uint8_t currentReading = 255; // Last raw reading
-  static uint8_t count = DEBOUNCE_THRESHOLD; // Stability counter (start stable)
 
-  uint8_t newReading = getButtonPressed(mozziAnalogRead<10>(BUTTONS_PIN)); // Raw multiplexed value (0,1,2,255)
-
-  if (newReading == currentReading) {
-    // Same as last reading: increment counter if unstable
-    if (count < DEBOUNCE_THRESHOLD) {
-      count++;
-      // Stable long enough? Update if state changed
-      if (count == DEBOUNCE_THRESHOLD && stableState != currentReading) {
-        stableState = currentReading;
-      }
-    }
-  } else {
-    // Reading changed: reset tracking
-    currentReading = newReading;
-    count = 1; // Reset counter (unstable)
-  }
-
-  return stableState; // Return debounced value
-}
 
 /**
- * @brief Detects button presses with timeless debouncing using a bit shift register.
+ * @brief Debounces the analog multiplexed buttons using Mozzi's EventDelay class.
  * 
- * @details This function implements a debouncing algorithm using a 16-bit shift register
- * to track button state history. The function reads an analog value from a voltage divider
- * circuit with three buttons multiplexed on a single analog input pin. The function shifts
- * the button history left by 2 bits and stores the new button state in the 2 LSBs.
- * A button is considered stably pressed only when its unique bit pattern fills the entire
- * shift register (8 consecutive identical readings).
- * 
- * Button values:
- * - 0: First button (voltage < 172)
- * - 1: Second button (voltage < 510)
- * - 2: Third button (voltage < 850)
- * - 255: No button pressed
- * 
- * I consider this timeless because it isn't using millis() or micros() to track time, which
- * is what most software debouncing algorithms do. Partly that's just inefficient: we can
- * achieve debouncing without that overhead. But also, we can't use millis() with Mozzi. We
- * could use Mozzi's ticks() function, but again, it's really efficent to just use bitwise math, 
- * and we use every bit of processing power we can get for Mozzi. Note that I may remove this
- * debounce logic entirely and use capacitors for hardware debouncing instead. Oh, also, I'm 
- * using the fast PWM option to remove motor whine from the audio circuit, so we really can't use
- * micros() or millis(). USE_FAST_PWM changes this.
- * 
- * I tested this with 256Hz update rates for the controls, and this debouncing works well. I 
- * tried it with 1kHz updates in a test sketch, and that's too fast and we still get some bounce. 
- * This should be fine for use with MOZZI_CONTROL_RATE = 128 Hz.
- * 
- * @param buttonPinVal The analog reading from the button input pin (0-1023).
- * @return uint8_t The debounced button state (0, 1, or 2. Returns 255 if no button pressed)
+ * @details Uses time-based debouncing based on Mozzi's EventDelay class. 
  */
 uint8_t getButtonPressed(uint16_t buttonPinVal) {
-  static uint8_t pressedContainer = 0b11111111, secondLayer = 0b11111111;  // initialize to decimal 255 to indicate no buttons pressed
-  // static uint8_t windowAvg[4] = {255, 255, 255, 255};
-  pressedContainer = pressedContainer << 2;               // shift the container value left 2 places to make room for the next reading
-  secondLayer = secondLayer << 2;
-  // This monstrosity does a few things: sort of working right to left, it uses nested ? ternary operators to check the value of 
-  // buttonPinVal, and then returns a value of 0, 1, 2, or 255. That 0, 1, 2, or 255 gets a bitwise AND mask to set all the bits to 0, 
-  // except for the 2 least significant bits (LSBs), which get preserved. Finally, those two LSBs get bitwise OR'd with the value in
-  // pressedContainer. This essentially stashes the number of the button that was pressed in the two LSBs of pressedContainer.
-  pressedContainer = pressedContainer | (((buttonPinVal < 172) ? 0 : ((buttonPinVal < 510) ? 1 : ((buttonPinVal < 850 ? 2 : 255)))) & 0b0000000000000011);
-  secondLayer = secondLayer | (((pressedContainer == 0) ? 0 : ((pressedContainer == 0b01010101) ? 1 : ((pressedContainer == 0b10101010) ? 2 : 255))) & 0b0000000000000011);
-  
-  // now check to see if a button has been pressed for long enough for the reading to stabilize:
-  
-  switch (pressedContainer) {
-    case 0:     // if the bits in pressedContainer are all 0, this means button 0 is pressed and has stabilized
-      return 0;
-      break;
-    
-    case 0b01010101:  // this pattern is what pressedContainer looks like when button 1 is stabilized
-      return 1;
-      break;
-    
-    case 0b10101010:  // this pattern is what it looks like when button 2 is stabilized
-      return 2;
-      break;
-    
-    default:
-      return 255;             // any other value means that no button has stabilized or is pressed
-      break;
+  constexpr uint8_t DEBOUNCE_INTERVAL = 10;
+  static EventDelay debounceTimer;
+  static bool evaluatingPress = false;
+  static uint8_t triggeredVal = 255, stableVal = 255;
+
+  // this next part is where the magic happens. The buttons are multiplexed on a single analog pin. This works by 
+  // creating a resistor ladder, where the buttons connect the analog pin to a different point on the ladder.
+  // This creates a unique voltage divider for each button, so whenever you press a button, the analog pin sees
+  // a distinct voltage that represents which button was pressed. The downside of this is that only one button can
+  // ever be pressed, and lower-numbered buttons will always have precedence. If you press and hold B1 and then pres
+  // B0, B0 will take over from B1. But the major upside of this is that you can put a bunch of buttons on a single
+  // pin! As long as you only need to detect a single button being pressed at a time, this is a worthwhile trade.
+  // This next line evaluates which button was pressed by checking the value reported by the ADC. I designed the 
+  // resistor ladder so that there's a roughly even spacing in ADC values between each button press (~340 counts
+  // between each button). This requires using different resistor values at each point in the ladder, but makes
+  // the code cleaner and more reliable. Otherwise you'd get logarithmically decreasing spacing between buttons 
+  // when represented as ADC counts. 
+  uint8_t rawButton = ((buttonPinVal < 172) ? 0 : ((buttonPinVal < 510) ? 1 : ((buttonPinVal < 850 ? 2 : 255))));
+
+  // now start the debounce logic if needed. Basically this looks for a state change and starts a timer.
+  if (rawButton != triggeredVal && !evaluatingPress) {
+    evaluatingPress = true;
+    debounceTimer.set(DEBOUNCE_INTERVAL);
+    debounceTimer.start();
+    triggeredVal = rawButton;
   }
 
+  // if the timer is up and we're evaluating a state change for possible button press, set the new stable state
+  if (evaluatingPress && debounceTimer.ready()) {
+    // if the new reading is the same as the reading that triggered evaluation, set the stable state to the new reading.
+    // otherwise, leave the stable state as is.
+    stableVal = (rawButton == triggeredVal) ? triggeredVal : stableVal;
+    evaluatingPress = false;
+  }
+  return stableVal;
 }
-
-
 
 
 /**
