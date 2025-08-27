@@ -962,7 +962,17 @@ void moveArmToRadius(int8_t targetRadius, int8_t currentRadius) {
 /**
  * @brief Debounces the analog multiplexed buttons using Mozzi's EventDelay class.
  * 
- * @details Uses time-based debouncing based on Mozzi's EventDelay class. 
+ * @details Uses time-based debouncing based on Mozzi's EventDelay class. I originally had a fancy timeless debouncing
+ * scheme that used bit shifting values as a way to wait for the button press to stabilize after bouncing. It actually 
+ * worked pretty well, but I was still have problems with bounce during testing. I tried layering that system on top of
+ * itself, but it was getting really arcane and hard to read and understand, so I switched to time-based debouncing. It
+ * instantly worked better. We have to use Mozzi's alternatives to millis() for this because the timers in the Atmega328
+ * are either claimed by Mozzi, or are running faster than normal because that removes what is otherwise an audible whine
+ * from the motors. This means that all normal timing functions are entirely broken and we can't use them, but Mozzi offers
+ * several alternatives in the form of ticks() and EventDelay.
+ * 
+ * @param buttonPinVal the ADC reading of the pin that the buttons are connected to. Be sure to use mozziAnalogRead() and not
+ * the stock Arduino analogRead(). analogRead() is actually quite slow.  
  */
 uint8_t getButtonPressed(uint16_t buttonPinVal) {
   constexpr uint8_t DEBOUNCE_INTERVAL = 10;
