@@ -172,6 +172,10 @@ constexpr uint8_t I2C_UPDATE_INTERVAL = 50;       // time in milliseconds
 const uint8_t PID_DIVISOR = 1;                    
 constexpr uint8_t PID_HZ = MOZZI_CONTROL_RATE / (float)PID_DIVISOR;
 
+constexpr uint8_t NUM_BRIGHTNESS_LEVELS = 5;
+uint8_t LEDBrightnessLevels[NUM_BRIGHTNESS_LEVELS] = {0, 32, 64, 192, 255};
+uint8_t brightnessIterator = 3; // default to brightness level 3 on startup
+
 
 // **********************************************************************************
 // Potentiometers and switch
@@ -184,6 +188,7 @@ constexpr uint8_t BUTTONS_PIN = A3;
 
 uint8_t buttonPressed = 255;                        // 255 means no button pressed, 0, 1 or 2 indicates which of the three buttons was pressed
 uint8_t getButtonPressed(uint16_t buttonPinVal);    // pass an analog reading on BUTTON_PIN into the parameter. Returns 1, 2, or 3 if one of those buttons is pressed, otherwise returns 255.
+uint8_t getDebouncedButton();                       // performs extra layer of debouncing
 
 // **********************************************************************************
 // Mozzi stuff
@@ -250,6 +255,7 @@ const char* testArp[8] = {"C2", "E3", "A3", "G4", "C4", "F4", "G#4", "D5"};
 const uint8_t numNotesInScale = 15;
 const char* scale_EbPentatonicMinor[numNotesInScale] = {"D#2", "F#2", "G#2", "A#2", "C#3", "D#3", "F#3", "G#3", "A#3", "C#4", "D#4", "F#4", "G#4", "A#4", "C#5"};
 uint8_t scaleNumbers_EbPentatonicMinor[numNotesInScale];
+
 
 
 // **********************************************************************************
@@ -334,7 +340,7 @@ void setup()
   // There's a chance that changing Timer 2's clock divisor will mess up Mozzi functions I'm not aware of. So far it hasn't though.
   if (USE_LED_PWM) {
     setPwmFrequency(11, 1);   // set Timer2 to clock divisor of 1 (clock rate 31250Hz now, above audible range)
-    analogWrite(LED_PIN, 192);    // set the brightness for the LEDs
+    analogWrite(LED_PIN, LEDBrightnessLevels[brightnessIterator]);    // set the brightness for the LEDs
   } else {
     digitalWrite(LED_PIN, HIGH);  // just turn the color sensor LEDs on at full brightness
   }
@@ -368,10 +374,12 @@ void setup()
 void updateControl() {
   static int8_t targetArmPos = 80;
   static bool initialize = true;
-  static EventDelay reactToDCTimer;
+  static EventDelay reactToDCTimer, buttonTimer;
   if (initialize) {
     reactToDCTimer.set(750);
     reactToDCTimer.start();
+    buttonTimer.set(125);    //125ms is exactly 1/16th notes for 120bpm in 4/4
+    buttonTimer.start();
     initialize = false;
   }
 
@@ -388,9 +396,29 @@ void updateControl() {
   static AutoMap autoBlueToVolume(0, RGBCIR.getResolution(), 0, 255);
   static AutoMap autoRedToVolume(0, RGBCIR.getResolution(), 0, 255);
 
-  // check to see if buttons are pressed
-  buttonPressed = getButtonPressed(mozziAnalogRead<10>(BUTTONS_PIN));
-  
+  // check to see if buttons are pressed. returns 0, 1, 2, 255
+  // 0 = B1, 1 = B2, 2 = B3, 255 = no press
+  // deal with the button presses
+  buttonPressed = getDebouncedButton();
+  SERIAL_PRINTLN(buttonPressed);
+  if (buttonTimer.ready()) {
+    switch (buttonPressed) {
+      case 0:
+        brightnessIterator = (++brightnessIterator) % NUM_BRIGHTNESS_LEVELS;
+        analogWrite(LED_PIN, LEDBrightnessLevels[brightnessIterator]);
+        break;
+      case 1:
+        break;
+      case 2:
+        break;
+        default:
+        break;     
+      }
+    buttonTimer.start();
+  }
+
+
+
   if (k_i2cUpdateDelay.ready()) {
     currentArmPosition = armAngleToRadius(armEncoder.getCumulativePosition());
     tableDC = tableDCFilter.next(tableEncoder.getCumulativePosition() * 4);
@@ -419,7 +447,7 @@ void updateControl() {
   static int16_t savedTableSpeed = targetTableSpeed;
 
   tableDC = (tableDC < -DCMovementThreshold || tableDC > DCMovementThreshold) ? tableDC : 0;    // add some hysteresis
-  SERIAL_PRINT(tableDC);
+  // SERIAL_PRINT(tableDC);
 
   if (reactToDCTimer.ready()) {
     if (tableDC == 0) {
@@ -432,8 +460,8 @@ void updateControl() {
       }
     } 
   }
-  SERIAL_TAB;
-  SERIAL_PRINTLN(targetTableSpeed);
+  // SERIAL_TAB;
+  // SERIAL_PRINTLN(targetTableSpeed);
 
   tableMotor.setSpeed(targetTableSpeed);
   // tableMotor.setSpeed(targetTableSpeed);
@@ -929,6 +957,32 @@ void moveArmToRadius(int8_t targetRadius, int8_t currentRadius) {
 }
 
 
+uint8_t getDebouncedButton() {
+  constexpr uint8_t DEBOUNCE_THRESHOLD = 4;
+  static uint8_t stableState = 255;    // Current stable value (no press)
+  static uint8_t currentReading = 255; // Last raw reading
+  static uint8_t count = DEBOUNCE_THRESHOLD; // Stability counter (start stable)
+
+  uint8_t newReading = getButtonPressed(mozziAnalogRead<10>(BUTTONS_PIN)); // Raw multiplexed value (0,1,2,255)
+
+  if (newReading == currentReading) {
+    // Same as last reading: increment counter if unstable
+    if (count < DEBOUNCE_THRESHOLD) {
+      count++;
+      // Stable long enough? Update if state changed
+      if (count == DEBOUNCE_THRESHOLD && stableState != currentReading) {
+        stableState = currentReading;
+      }
+    }
+  } else {
+    // Reading changed: reset tracking
+    currentReading = newReading;
+    count = 1; // Reset counter (unstable)
+  }
+
+  return stableState; // Return debounced value
+}
+
 /**
  * @brief Detects button presses with timeless debouncing using a bit shift register.
  * 
@@ -962,25 +1016,29 @@ void moveArmToRadius(int8_t targetRadius, int8_t currentRadius) {
  * @return uint8_t The debounced button state (0, 1, or 2. Returns 255 if no button pressed)
  */
 uint8_t getButtonPressed(uint16_t buttonPinVal) {
-  static uint16_t pressedContainer = 0b1111111111111111;  // initialize to decimal 255 to indicate no buttons pressed
+  static uint8_t pressedContainer = 0b11111111, secondLayer = 0b11111111;  // initialize to decimal 255 to indicate no buttons pressed
+  // static uint8_t windowAvg[4] = {255, 255, 255, 255};
   pressedContainer = pressedContainer << 2;               // shift the container value left 2 places to make room for the next reading
+  secondLayer = secondLayer << 2;
   // This monstrosity does a few things: sort of working right to left, it uses nested ? ternary operators to check the value of 
   // buttonPinVal, and then returns a value of 0, 1, 2, or 255. That 0, 1, 2, or 255 gets a bitwise AND mask to set all the bits to 0, 
   // except for the 2 least significant bits (LSBs), which get preserved. Finally, those two LSBs get bitwise OR'd with the value in
   // pressedContainer. This essentially stashes the number of the button that was pressed in the two LSBs of pressedContainer.
   pressedContainer = pressedContainer | (((buttonPinVal < 172) ? 0 : ((buttonPinVal < 510) ? 1 : ((buttonPinVal < 850 ? 2 : 255)))) & 0b0000000000000011);
+  secondLayer = secondLayer | (((pressedContainer == 0) ? 0 : ((pressedContainer == 0b01010101) ? 1 : ((pressedContainer == 0b10101010) ? 2 : 255))) & 0b0000000000000011);
   
   // now check to see if a button has been pressed for long enough for the reading to stabilize:
+  
   switch (pressedContainer) {
     case 0:     // if the bits in pressedContainer are all 0, this means button 0 is pressed and has stabilized
       return 0;
       break;
     
-    case 0b0101010101010101:  // this pattern is what pressedContainer looks like when button 1 is stabilized
+    case 0b01010101:  // this pattern is what pressedContainer looks like when button 1 is stabilized
       return 1;
       break;
     
-    case 0b1010101010101010:  // this pattern is what it looks like when button 2 is stabilized
+    case 0b10101010:  // this pattern is what it looks like when button 2 is stabilized
       return 2;
       break;
     
@@ -988,7 +1046,9 @@ uint8_t getButtonPressed(uint16_t buttonPinVal) {
       return 255;             // any other value means that no button has stabilized or is pressed
       break;
   }
+
 }
+
 
 
 
