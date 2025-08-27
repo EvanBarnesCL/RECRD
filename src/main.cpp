@@ -94,7 +94,7 @@ DRV8835 armMotor(ARM_SPEED_PIN, ARM_DIR_PIN, 50, true);
 
 void homeArm(int16_t startingPosition = 0);
 
-constexpr uint8_t MAX_CONSTRAINED_RADIUS = 78;  // the maximum absolute value radius the arm will be allowed to move to during normal operation
+constexpr uint8_t MAX_CONSTRAINED_RADIUS = 75;  // the maximum absolute value radius the arm will be allowed to move to during normal operation
 
 int16_t armRadiusToAngle(int16_t radiusMM);     // convert arm radius in millimeters to angle in encoder counts
 int16_t armAngleToRadius(int16_t angleCounts);  // convert arm angle in encoder counts to radius in millimeters
@@ -613,14 +613,16 @@ void homeArm(int16_t startingPosition) {
  * If you want you can see a spreadsheet that I made to help figure all this out. It's not particularly well organized, and it's missing
  * the original math that I did by hand, as well as the Desmos graphs I made to check my reasoning, but it should help get some of the 
  * concepts clarified. https://docs.google.com/spreadsheets/d/1RaxqJCClSnBzAPjxKA0sKCvFVXpXQ3Gc1AZQWVGnURM/edit?usp=sharing
+ * 
+ * Also, I inlined this function because it is really short and called frequently, and in cases like those, inlining a function can
+ * potentially speed up code execution. I think that's because the processor doesn't have to go through executing a separate function call.
+ * I'm not sure though, and don't even know if this speeds things up, but why not? It doesn't hurt, might help, and we need all the speed
+ * we can get back for running Mozzi.
  */
-int16_t armRadiusToAngle(int16_t radiusMM) {
+inline int16_t armRadiusToAngle(int16_t radiusMM) {
   uint16_t absRadius = abs(radiusMM);   // bit shifting operations on signed integers create weird results, so we have to use an unsigned int
-  if (radiusMM < 0) {
-    return -1 * ((774 * absRadius) >> 7);
-  } else {
-    return (774 * absRadius) >> 7;
-  }
+  uint16_t intermediate = (774 * absRadius) >> 7;
+  return (radiusMM < 0) ? -1 * intermediate : intermediate;
 }
 
 
@@ -654,13 +656,17 @@ int16_t armRadiusToAngle(int16_t radiusMM) {
  * efficient method for calculating things like trig functions. This kind of thing is used everywhere in software. Every video game you've ever
  * played has basically been a giant system of linear algebra and trig functions. 
  */
-int16_t armAngleToRadius(int16_t angleCounts) {
+inline int16_t armAngleToRadius(int16_t angleCounts) {
   uint16_t absAngleCounts = abs(angleCounts);
-  if (angleCounts < 0) {
-    return -1 * ((81 * absAngleCounts) >> 9);
-  } else {
-    return (81 * absAngleCounts) >> 9;
-  }
+  uint16_t intermediate = (81 * absAngleCounts) >> 9;
+  return (angleCounts < 0) ? -1 * intermediate : intermediate; 
+
+  // note that the above is functionally equivalent to the following:
+  // if (angleCounts < 0) {
+  //   return -1 * intermediate;
+  // } else {
+  //   return intermediate;
+  // }
 }
 
 
