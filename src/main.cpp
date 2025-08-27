@@ -33,6 +33,8 @@
 #include <Mozzi.h>                  // Main synthesizer library
 #include <Oscil.h>                  // Oscillator
 #include <tables/saw2048_int8.h>    // Saw wavetable
+#include <tables/triangle_dist_cubed_2048_int8.h>
+#include <tables/triangle_valve_2_2048_int8.h>
 #include <IntMap.h>                 // A more efficient replacement for map()
 #include <EventDelay.h>             // Mozzi library for performing actions at specific time intervals without delay() or millis()
 #include <mozzi_utils.h>
@@ -200,9 +202,9 @@ uint8_t getDebouncedButton();                       // performs extra layer of d
 
 // Oscil Wash example sketch stuff
 
-Oscil<SAW2048_NUM_CELLS, MOZZI_AUDIO_RATE> aSaw2(SAW2048_DATA);
+Oscil<TRIANGLE_DIST_CUBED_2048_NUM_CELLS, MOZZI_AUDIO_RATE> aSaw2(TRIANGLE_DIST_CUBED_2048_DATA);
 Oscil<SAW2048_NUM_CELLS, MOZZI_AUDIO_RATE> aSaw3(SAW2048_DATA);
-Oscil<SAW2048_NUM_CELLS, MOZZI_AUDIO_RATE> aSaw4(SAW2048_DATA);
+Oscil<TRIANGLE_VALVE_2_2048_NUM_CELLS, MOZZI_AUDIO_RATE> aSaw4(TRIANGLE_VALVE_2_2048_DATA);
 
 // audio volumes updated each control interrupt and reused in audio till next control
 // well this is wild. The original example sketch I built this from used char as the datatype, which is not something that
@@ -260,6 +262,12 @@ const uint8_t numNotesInScale = 15;
 const char* scale_EbPentatonicMinor[numNotesInScale] = {"D#2", "F#2", "G#2", "A#2", "C#3", "D#3", "F#3", "G#3", "A#3", "C#4", "D#4", "F#4", "G#4", "A#4", "C#5"};
 uint8_t scaleNumbers_EbPentatonicMinor[numNotesInScale];
 
+uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, bool trigger, uint8_t arpMode, uint8_t arpSpread);
+EventDelay arpIntervalTimer;
+bool arpIntervalTimerStarted = false;
+uint16_t arpInterval = 62;
+constexpr uint16_t arpMinInterval = 15, arpMaxInterval = 1000;
+const IntMap arpIntervalMap(0, 255, arpMaxInterval, arpMinInterval); // reversed so that more red == faster arpeggio
 
 
 // **********************************************************************************
@@ -357,7 +365,9 @@ void setup()
   aSaw2.setFreq(mtof(noteNameToMIDINote("E2")));
   aSaw3.setFreq(mtof(noteNameToMIDINote("A3")));
   aSaw4.setFreq(mtof(noteNameToMIDINote("B4")));
-  v2 = v3 = v4 = 127;
+  
+  v2 = v3 = 0;
+  v4 = 127;
   
   // finally, start the timers
   k_i2cUpdateDelay.set(I2C_UPDATE_INTERVAL);      // control how frequently we poll the sensors on the I2C bus (color sensor, both encoders)
@@ -482,17 +492,68 @@ void updateControl() {
   mappedRed = autoRedToVolume(scaledFixedColorData.redFixed.asInt());
 
   // oscil wash example sketch stuff
-  v2 = mappedGreen;
-  v3 = mappedBlue;
-  v4 = mappedRed;
+  // v2 = mappedGreen;
+  // v3 = mappedBlue;
+  // v4 = mappedRed;
+  v4 = 127;
 
-  aSaw2.setFreq(mtof(snapToNearestNote((mappedBlue >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
-  aSaw3.setFreq(mtof(snapToNearestNote((mappedRed >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
-  aSaw4.setFreq(mtof(snapToNearestNote((mappedGreen >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
+  // aSaw2.setFreq(mtof(snapToNearestNote((mappedBlue >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
+  // aSaw3.setFreq(mtof(snapToNearestNote((mappedRed >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
+  // aSaw4.setFreq(mtof(snapToNearestNote((mappedGreen >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
+
+
+  arpInterval = arpIntervalMap(mappedRed);
+  SERIAL_PRINTLN(mappedRed);
+  if (!arpIntervalTimerStarted) {
+    arpIntervalTimer.set(arpInterval);
+    arpIntervalTimer.start();
+    arpIntervalTimerStarted = true;
+  }
+
+  static int16_t currentFreq = 0;
+  if (arpIntervalTimer.ready()) {
+    currentFreq = mtof(arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, true, 0, 0));
+    arpIntervalTimerStarted = false;
+  }
+
+  aSaw4.setFreq(currentFreq);
+
 }
 
 
+/**
+ * arpMode:
+ * 0 - up loop
+ * 1 - down loop
+ * 2 - up-down-up loop
+ * 3 - random
+ * 
+ * arpSpread: how many octaves to add to the span of the baseline scale. setting to 1 will expand 1 octave higher.
+ */
+uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, bool trigger = false, uint8_t arpMode = 0, uint8_t arpSpread = 0) {
+  static uint8_t index = 0;
+  static uint8_t outputNote = 0;
+  index %= numNotesInScale;     // safety feature to prevent overflowing array
 
+  if (trigger) {
+    switch (arpMode) {
+      case 0:
+        outputNote = scaleNumbers[index];
+        ++index %= numNotesInScale;  // always wrap around at the end of the arpeggio
+        break;
+      case 1:
+        break;
+      case 2:
+        break;
+      case 3:
+        break;
+      default:
+        break;
+    }
+  }
+  
+  return outputNote;
+}
 
 
 
@@ -901,8 +962,8 @@ void convertArray_NoteNumbersToNames(const uint8_t midiNotes[], uint8_t numNotes
 int16_t convertPotValToArmRadius(uint16_t potVal) {
   constexpr uint8_t DEADBAND = 15;
   potVal = (potVal < 512 + DEADBAND && potVal > 512 - DEADBAND) ? 512 : potVal;   // add a bit of deadband
-  SERIAL_TAB;
-  SERIAL_PRINTLN(potVal);
+  // SERIAL_TAB;
+  // SERIAL_PRINTLN(potVal);
   return map(potVal, 1023, 0, MAX_CONSTRAINED_RADIUS, -MAX_CONSTRAINED_RADIUS);
 }
 
