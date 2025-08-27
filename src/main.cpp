@@ -94,17 +94,21 @@ DRV8835 armMotor(ARM_SPEED_PIN, ARM_DIR_PIN, 50, true);
 
 void homeArm(int16_t startingPosition = 0);
 
+constexpr uint8_t MAX_CONSTRAINED_RADIUS = 78;  // the maximum absolute value radius the arm will be allowed to move to during normal operation
 
 int16_t armRadiusToAngle(int16_t radiusMM);     // convert arm radius in millimeters to angle in encoder counts
 int16_t armAngleToRadius(int16_t angleCounts);  // convert arm angle in encoder counts to radius in millimeters
 int16_t convertPotValToArmRadius(uint16_t potVal);
 int16_t convertPotValToTableSpeed(int16_t potVal);
-void moveArmToRadius(int8_t targetRadius, int8_t currentRadius);
+// void moveArmToRadius(int8_t targetRadius, int8_t currentRadius);
+void moveArmToRadius(int8_t targetRadius, int16_t currentAngle);
+void moveArmToAngle(int16_t targetAngle, int16_t currentAngle);
 
 AS5600L tableEncoder;
 AS5600 armEncoder;
 
 int8_t currentArmPosition = 0; // current arm position in millimeters from center of table
+int16_t currentArmAngle = 0;
 
 DCfilter armDCFilter(0.95);          // DC filter detects changes in arm position (settles to 0 if the arm is not moving)
 DCfilter tableDCFilter(0.6);        // DC filter for table movement
@@ -400,7 +404,7 @@ void updateControl() {
   // 0 = B1, 1 = B2, 2 = B3, 255 = no press
   // deal with the button presses
   buttonPressed = getButtonPressed(mozziAnalogRead<10>(BUTTONS_PIN));
-  SERIAL_PRINTLN(buttonPressed);
+  // SERIAL_PRINTLN(buttonPressed);
   if (buttonTimer.ready()) {
     switch (buttonPressed) {
       case 0:
@@ -420,7 +424,8 @@ void updateControl() {
 
 
   if (k_i2cUpdateDelay.ready()) {
-    currentArmPosition = armAngleToRadius(armEncoder.getCumulativePosition());
+    currentArmAngle = armEncoder.getCumulativePosition();
+    currentArmPosition = armAngleToRadius(currentArmAngle);
     tableDC = tableDCFilter.next(tableEncoder.getCumulativePosition() * 4);
     updateColorReadings(&colorData);
     // scaleColorData(&colorData);       // scale the blue and red channels to bring them in line with green channel (essential white balance correction)
@@ -436,8 +441,12 @@ void updateControl() {
   // }
   
   targetArmPos = convertPotValToArmRadius(mozziAnalogRead<10>(POT_A_PIN));
-  moveArmToRadius(targetArmPos, currentArmPosition);
+  int16_t targetArmAngle = armRadiusToAngle(targetArmPos);
+  // moveArmToRadius(targetArmPos, currentArmPosition);
+  moveArmToAngle(targetArmAngle, currentArmAngle);
 
+
+  // SERIAL_PRINTLN(currentArmPosition);
 
   // now deal with controlling the table motion. Eventually I'm going to use the DC filter to watch the motion of the table.
   // If the program expects it to be moving, but the DC filter shows that it has stopped, the program will stop the drive
@@ -555,7 +564,7 @@ void homeArm(int16_t startingPosition) {
   }
   SERIAL_PRINTLN("homing finished");
   armMotor.setSpeed(0);
-  armEncoder.resetCumulativePosition(661);
+  armEncoder.resetCumulativePosition(661);    // shifts the angle around so that 0 angle is directly over center of table
   delay(1000);
 }
 
@@ -884,7 +893,11 @@ void convertArray_NoteNumbersToNames(const uint8_t midiNotes[], uint8_t numNotes
 
 
 int16_t convertPotValToArmRadius(uint16_t potVal) {
-  return map(potVal, 1023, 0, 80, -80);
+  constexpr uint8_t DEADBAND = 15;
+  potVal = (potVal < 512 + DEADBAND && potVal > 512 - DEADBAND) ? 512 : potVal;   // add a bit of deadband
+  SERIAL_TAB;
+  SERIAL_PRINTLN(potVal);
+  return map(potVal, 1023, 0, MAX_CONSTRAINED_RADIUS, -MAX_CONSTRAINED_RADIUS);
 }
 
 int16_t convertPotValToTableSpeed(int16_t potVal) {
@@ -916,13 +929,58 @@ int16_t convertPotValToTableSpeed(int16_t potVal) {
  * @return void
  */
 
-void moveArmToRadius(int8_t targetRadius, int8_t currentRadius) {
-  // I need to add a feature that cuts motor speed to 0 when end of range of arm motion is reached. I think sometimes it exceeds the
-  // range that works properly for the angle to distance calculator and causes odd behavior.
+// void moveArmToRadius(int8_t targetRadius, int8_t currentRadius) {
+//   // I need to add a feature that cuts motor speed to 0 when end of range of arm motion is reached. I think sometimes it exceeds the
+//   // range that works properly for the angle to distance calculator and causes odd behavior.
 
+//   static EventDelay accelTimer;
+//   static bool initialize = true;
+//   constexpr uint8_t accelerationMultiplier = 4; // value added to last motor speed to cause acceleration
+//   constexpr uint16_t accelerationInterval = 1;  // milliseconds between speed updates
+//   // the first time this function is called, we need to initialize the timer to run at the appropriate interval
+//   if (initialize) {
+//     accelTimer.set(accelerationInterval);
+//     initialize = false;
+//   }
+
+//   static int16_t lastMotorSpeed = 0, targetMotorSpeed = 0;
+//   static int16_t targetAngle = 0, currentAngle = 0;
+//   constexpr uint8_t DEADBAND = 0;   // if the current position is within this distance of the target, we reached the target
+//   constexpr uint8_t maxMotorSpeed = 128;
+//   static int8_t directionVector = 1;
+
+//   // handle motor acceleration
+//   // figure out if the target is outside the deadband range of the current position
+//   // int16_t displacement = targetRadius - currentRadius;   // this needs to be int16_t so that it doesn't overflow (originally I was using int8_t and had errors)
+  
+//   targetAngle = armRadiusToAngle()
+//   int16_t displacement = targetAngle - currentAngle;
+  
+//   if (abs(displacement) <= DEADBAND) {
+//     targetMotorSpeed = 0;
+    
+//   } else {
+//     if (accelTimer.ready()) {
+//       directionVector = displacement > 0 ? 1 : -1;
+//       targetMotorSpeed = constrain((accelerationMultiplier * directionVector) + lastMotorSpeed, -1 * maxMotorSpeed, maxMotorSpeed);
+//       // SERIAL_PRINT(targetRadius);
+//       // SERIAL_TAB;
+//       // SERIAL_PRINT(currentRadius);
+//       // SERIAL_TAB;
+//       // SERIAL_PRINTLN(directionVector);
+//       accelTimer.start();
+//     }
+//   }
+//   armMotor.setSpeed(targetMotorSpeed);
+//   lastMotorSpeed = targetMotorSpeed;
+// }
+
+
+
+void moveArmToAngle(int16_t targetAngle, int16_t currentAngle) {
   static EventDelay accelTimer;
   static bool initialize = true;
-  constexpr uint8_t accelerationMultiplier = 2; // value added to last motor speed to cause acceleration
+  constexpr uint8_t accelerationMultiplier = 1; // value added to last motor speed to cause acceleration
   constexpr uint16_t accelerationInterval = 2;  // milliseconds between speed updates
   // the first time this function is called, we need to initialize the timer to run at the appropriate interval
   if (initialize) {
@@ -931,14 +989,13 @@ void moveArmToRadius(int8_t targetRadius, int8_t currentRadius) {
   }
 
   static int16_t lastMotorSpeed = 0, targetMotorSpeed = 0;
-  constexpr uint8_t deadBand = 2;   // if the current position is within this distance of the target, we reached the target
-  constexpr uint8_t maxMotorSpeed = 240;
+  constexpr uint8_t DEADBAND = 10;   // if the current position is within this distance of the target, we reached the target
+  constexpr uint8_t maxMotorSpeed = 140;
   static int8_t directionVector = 1;
 
-  // handle motor acceleration
-  // figure out if the target is outside the deadband range of the current position
-  int16_t displacement = targetRadius - currentRadius;   // this needs to be int16_t so that it doesn't overflow (originally I was using int8_t and had errors)
-  if (abs(displacement) <= deadBand) {
+  int16_t displacement = targetAngle - currentAngle;
+
+  if (abs(displacement) <= DEADBAND) {
     targetMotorSpeed = 0;
   } else {
     if (accelTimer.ready()) {
@@ -955,6 +1012,56 @@ void moveArmToRadius(int8_t targetRadius, int8_t currentRadius) {
   armMotor.setSpeed(targetMotorSpeed);
   lastMotorSpeed = targetMotorSpeed;
 }
+
+
+
+void moveArmToRadius(int8_t targetRadius, int16_t currentAngle = 0) {
+  // I need to add a feature that cuts motor speed to 0 when end of range of arm motion is reached. I think sometimes it exceeds the
+  // range that works properly for the angle to distance calculator and causes odd behavior.
+
+  static EventDelay accelTimer;
+  static bool initialize = true;
+  constexpr uint8_t accelerationMultiplier = 4; // value added to last motor speed to cause acceleration
+  constexpr uint16_t accelerationInterval = 1;  // milliseconds between speed updates
+  // the first time this function is called, we need to initialize the timer to run at the appropriate interval
+  if (initialize) {
+    accelTimer.set(accelerationInterval);
+    initialize = false;
+  }
+
+  static int16_t lastMotorSpeed = 0, targetMotorSpeed = 0;
+  static int16_t targetAngle = 0;
+  constexpr uint8_t DEADBAND = 10;   // if the current position is within this distance of the target, we reached the target
+  constexpr uint8_t maxMotorSpeed = 128;
+  static int8_t directionVector = 1;
+
+  // handle motor acceleration
+  // figure out if the target is outside the deadband range of the current position
+  // int16_t displacement = targetRadius - currentRadius;   // this needs to be int16_t so that it doesn't overflow (originally I was using int8_t and had errors)
+  
+  targetAngle = armRadiusToAngle(targetRadius);
+  int16_t displacement = targetAngle - currentAngle;
+  
+  if (abs(displacement) <= DEADBAND) {
+    targetMotorSpeed = 0;
+  } else {
+    if (accelTimer.ready()) {
+      directionVector = displacement > 0 ? 1 : -1;
+      targetMotorSpeed = constrain((accelerationMultiplier * directionVector) + lastMotorSpeed, -1 * maxMotorSpeed, maxMotorSpeed);
+      // SERIAL_PRINT(targetRadius);
+      // SERIAL_TAB;
+      // SERIAL_PRINT(currentRadius);
+      // SERIAL_TAB;
+      // SERIAL_PRINTLN(directionVector);
+      accelTimer.start();
+    }
+  }
+  armMotor.setSpeed(targetMotorSpeed);
+  lastMotorSpeed = targetMotorSpeed;
+}
+
+
+
 
 
 
