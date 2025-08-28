@@ -46,7 +46,11 @@
 #include <FastPID.h>                // Fast fixed point math PID implementation used for controlling arm position - might remove
 #include <AutoMap.h>                // A version of map() that is auto-ranging. Used for mapping color values to control signals.
 
+#include <tables/BandLimited_TRI/2048/tri_max_148_at_16384_2048_int8.h>
+Oscil <TRI_MAX_148_AT_16384_2048_NUM_CELLS, TRI_MAX_148_AT_16384_2048_SAMPLERATE> aOscil(TRI_MAX_148_AT_16384_2048_DATA);
 
+#include <tables/phasor256_int8.h>
+Oscil <PHASOR256_NUM_CELLS, PHASOR256_SAMPLERATE> aOscil(PHASOR256_DATA);
 /**
  * This is a macro for easily enabling or disabling the Serial monitor print statements. 
  * 
@@ -202,9 +206,10 @@ uint8_t getDebouncedButton();                       // performs extra layer of d
 
 // Oscil Wash example sketch stuff
 
-Oscil<TRIANGLE_DIST_CUBED_2048_NUM_CELLS, MOZZI_AUDIO_RATE> aSaw2(TRIANGLE_DIST_CUBED_2048_DATA);
-Oscil<SAW2048_NUM_CELLS, MOZZI_AUDIO_RATE> aSaw3(SAW2048_DATA);
-Oscil<TRIANGLE_VALVE_2_2048_NUM_CELLS, MOZZI_AUDIO_RATE> aSaw4(TRIANGLE_VALVE_2_2048_DATA);
+Oscil<TRIANGLE_DIST_CUBED_2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc0(TRIANGLE_DIST_CUBED_2048_DATA);
+Oscil<SAW2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc1(SAW2048_DATA);
+Oscil<TRIANGLE_VALVE_2_2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc2(TRIANGLE_VALVE_2_2048_DATA);
+// Oscil<TRIANGLE_VALVE_2_2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc3(TRIANGLE_VALVE_2_2048_DATA);
 
 // audio volumes updated each control interrupt and reused in audio till next control
 // well this is wild. The original example sketch I built this from used char as the datatype, which is not something that
@@ -219,7 +224,7 @@ Oscil<TRIANGLE_VALVE_2_2048_NUM_CELLS, MOZZI_AUDIO_RATE> aSaw4(TRIANGLE_VALVE_2_
 // of that is that the volume is much louder, but it also starts making noise immediately. It's unpleasant sounding until the
 // AutoMaps kick in and start ranging things correctly. I could fix this by adding some kind of volume fade that runs when the
 // program boots up, but I like that with int8_t, it's adaptive to the actual color data it receives and isn't time based.
-int8_t v2, v3, v4;
+int8_t osc0vol, osc1vol, osc2vol, osc3vol;
 
 // **********************************************************************************
 // Music stuff
@@ -265,7 +270,7 @@ uint8_t scaleNumbers_EbPentatonicMinor[numNotesInScale];
 uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, bool trigger, uint8_t manualIndex, int8_t offset, uint8_t arpMode, uint8_t arpSpread);
 EventDelay arpIntervalTimer;
 bool arpIntervalTimerStarted = false;
-uint16_t arpInterval = 62;
+uint16_t arpInterval = 500;
 constexpr uint16_t arpMinInterval = 7, arpMaxInterval = 1000;
 const IntMap arpIntervalMap(0, 255, arpMaxInterval, arpMinInterval); // reversed so that more red == faster arpeggio
 // const IntMap arpColorToNote(0, 16, 0, numNotesInScale);
@@ -276,6 +281,23 @@ uint8_t noteOffsetInterval = 125;
 EventDelay noteOffset2Timer;
 bool noteOffset2TimerStarted = false, useNoteOffset2 = true;
 uint8_t noteOffset2Interval = 125;
+
+EventDelay chordIntervalTimer;
+bool chordIntervalTimerStarted = false;
+uint8_t chordInterval = 250;
+
+
+/** for reference, this is the chord progression I'm testing with
+ * 
+ * Chord chordProgressionCombined[8] = {Am, Am7, C, Cadd9, F, Fm6, Em, Em7};
+ * 
+ */ 
+
+
+constexpr uint8_t numChordsInProgression = sizeof(chordProgression) / sizeof(chordProgression[0]);
+
+
+
 
 
 // **********************************************************************************
@@ -370,12 +392,12 @@ void setup()
   
   // Oscil wash example sketch stuff
   // set harmonic frequencies
-  aSaw2.setFreq(mtof(noteNameToMIDINote("E2")));
-  aSaw3.setFreq(mtof(noteNameToMIDINote("A3")));
-  aSaw4.setFreq(mtof(noteNameToMIDINote("B4")));
+  osc0.setFreq(mtof(noteNameToMIDINote("E2")));
+  osc1.setFreq(mtof(noteNameToMIDINote("A3")));
+  osc2.setFreq(mtof(noteNameToMIDINote("B4")));
   
-  v2 = v3 = 0;
-  v4 = 127;
+  osc0vol = osc1vol = 0;
+  osc2vol = 127;
   
   // finally, start the timers
   k_i2cUpdateDelay.set(I2C_UPDATE_INTERVAL);      // control how frequently we poll the sensors on the I2C bus (color sensor, both encoders)
@@ -500,20 +522,61 @@ void updateControl() {
   mappedRed = autoRedToVolume(scaledFixedColorData.redFixed.asInt());
 
   // oscil wash example sketch stuff
-  // v2 = mappedGreen;
-  // v3 = mappedBlue;
-  // v4 = mappedRed;
+  // osc0vol = mappedGreen;
+  // osc1vol = mappedBlue;
+  // osc2vol = mappedRed;
   
+    // osc0.setFreq(mtof(snapToNearestNote((mappedBlue >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
+    // osc1.setFreq(mtof(snapToNearestNote((mappedRed >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
+    // osc2.setFreq(mtof(snapToNearestNote((mappedGreen >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
   
-  v2 = 100;
-  v3 = 50;
-  v4 = 100;
   
 
-  // aSaw2.setFreq(mtof(snapToNearestNote((mappedBlue >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
-  // aSaw3.setFreq(mtof(snapToNearestNote((mappedRed >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
-  // aSaw4.setFreq(mtof(snapToNearestNote((mappedGreen >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
+ 
 
+  if (!arpIntervalTimerStarted) {
+    arpIntervalTimer.set(arpInterval);
+    arpIntervalTimer.start();
+    arpIntervalTimerStarted = true;
+  }
+
+  if (!chordIntervalTimerStarted) {
+    chordIntervalTimer.set(chordInterval);
+    chordIntervalTimer.start();
+    chordIntervalTimerStarted = true;
+  }
+
+  static uint8_t iter = 0, iter1 = 0;
+  static UFix<12, 15> f0, f1, f2, f3;
+
+  if (chordIntervalTimer.ready()) {
+    setFreqsFromChord(chordProgression[iter], f0, f1, f2, f3);
+    iter = (++iter) % numChordsInProgression;
+    chordIntervalTimerStarted = false;
+  }
+
+  constexpr uint8_t numNotesInArp = sizeof(testArp) / sizeof(testArp[0]);
+  if (arpIntervalTimer.ready()) {
+    f3 = mtof(noteNameToMIDINote(getNoteFromArpeggio(testArp, 8, iter1)));
+    iter1 = (++iter1) % numNotesInArp;
+    arpIntervalTimerStarted = false;
+  }
+
+  osc0.setFreq(f0);
+  osc1.setFreq(f1);
+  osc2.setFreq(f2);
+  // osc3.setFreq(f3);
+
+   // set volume for each oscillator
+  osc0vol = 100;
+  osc1vol = 50;
+  osc2vol = 100;
+  // osc3vol = 100;
+
+  
+
+  /*
+  // this commented block is all the single note, 3 voice arp stuff that worked well
 
 
   arpInterval = arpIntervalMap(mappedRed);    // this remaps the mapped red data into an interval for time between notes in arpeggio
@@ -556,22 +619,58 @@ void updateControl() {
   }
   
   if (noteOffsetTimerStarted == true && noteOffsetTimer.ready()) {
-    aSaw2.setFreq(freq2);
+    osc0.setFreq(freq2);
     useNoteOffset = true;
     noteOffsetTimerStarted = false;
   }
 
   if (noteOffset2TimerStarted == true && noteOffset2Timer.ready()) {
-    aSaw3.setFreq(freq3);
+    osc1.setFreq(freq3);
     useNoteOffset2 = true;
     noteOffset2TimerStarted = false;
   }
 
-  aSaw4.setFreq(freq4);
+  osc2.setFreq(freq4);
 
-
+  */
 
 }
+
+
+
+// **********************************************************************************
+// updateAudio for Mozzi
+// **********************************************************************************
+
+AudioOutput_t updateAudio() {
+  // oscil wash example sketch stuff
+  int32_t asig = (int32_t)
+    osc0.next() * osc0vol + 
+    osc1.next() * osc1vol +
+    osc2.next() * osc2vol;
+    // osc3.next() * osc3vol;
+
+  return MonoOutput::fromAlmostNBit(17, asig);
+}
+
+
+// **********************************************************************************
+// Loop
+// **********************************************************************************
+
+void loop() {
+  // synthesize new audio for Mozzi
+  audioHook();
+}
+
+
+
+// **********************************************************************************
+// Function Definitions
+// **********************************************************************************
+
+
+
 
 
 /**
@@ -623,35 +722,12 @@ uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, bool t
 
 
 
-// **********************************************************************************
-// updateAudio for Mozzi
-// **********************************************************************************
-
-AudioOutput_t updateAudio() {
-  // oscil wash example sketch stuff
-  int32_t asig = (int32_t)
-    aSaw2.next() * v2 + 
-    aSaw3.next() * v3 +
-    aSaw4.next() * v4;
-
-  return MonoOutput::fromAlmostNBit(17, asig);
-}
-
-
-// **********************************************************************************
-// Loop
-// **********************************************************************************
-
-void loop() {
-  // synthesize new audio for Mozzi
-  audioHook();
-}
 
 
 
-// **********************************************************************************
-// Function Definitions
-// **********************************************************************************
+
+
+
 
 void homeArm(int16_t startingPosition) {
   SERIAL_PRINTLN("starting homing");
@@ -863,7 +939,7 @@ void printColorData() {
     SERIAL_PRINT(mappedRed);
   }
 
-  // SERIAL_PRINT("  "); SERIAL_PRINT(v2);
+  // SERIAL_PRINT("  "); SERIAL_PRINT(osc0vol);
 
   SERIAL_PRINTLN();
 }
