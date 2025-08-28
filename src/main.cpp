@@ -266,9 +266,16 @@ uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, bool t
 EventDelay arpIntervalTimer;
 bool arpIntervalTimerStarted = false;
 uint16_t arpInterval = 62;
-constexpr uint16_t arpMinInterval = 7, arpMaxInterval = 500;
+constexpr uint16_t arpMinInterval = 7, arpMaxInterval = 1000;
 const IntMap arpIntervalMap(0, 255, arpMaxInterval, arpMinInterval); // reversed so that more red == faster arpeggio
 // const IntMap arpColorToNote(0, 16, 0, numNotesInScale);
+EventDelay noteOffsetTimer;
+bool noteOffsetTimerStarted = false, useNoteOffset = true;
+uint8_t noteOffsetInterval = 125;
+
+EventDelay noteOffset2Timer;
+bool noteOffset2TimerStarted = false, useNoteOffset2 = true;
+uint8_t noteOffset2Interval = 125;
 
 
 // **********************************************************************************
@@ -499,7 +506,7 @@ void updateControl() {
   
   
   v2 = 100;
-  v3 = 40;
+  v3 = 50;
   v4 = 100;
   
 
@@ -529,13 +536,37 @@ void updateControl() {
   if (arpIntervalTimer.ready()) {
     currentNote = arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, true, directIndex, 0, 0, 0);
     freq4 = mtof(currentNote);
-    freq3 = mtof(arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, true, directIndex - 2, 5, 4, 0));
-    freq2 = mtof(arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, true, directIndex - 3, -3, 0, 0));
+    if (useNoteOffset) {
+      freq2 = mtof(arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, true, directIndex - 3, -3, 0, 0));
+      noteOffsetInterval = arpInterval >> 1;
+      noteOffsetTimer.set(noteOffsetInterval);
+      noteOffsetTimer.start();
+      noteOffsetTimerStarted = true;
+      useNoteOffset = false;
+    }
+    if (useNoteOffset2) {
+      freq3 = mtof(arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, true, directIndex - 2, 5, 4, 0));
+      noteOffset2Interval = arpInterval;
+      noteOffset2Timer.set(noteOffset2Interval);
+      noteOffset2Timer.start();
+      noteOffset2TimerStarted = true;
+      useNoteOffset2 = false;
+    }
     arpIntervalTimerStarted = false;
   }
   
-  aSaw2.setFreq(freq2);
-  aSaw3.setFreq(freq3);
+  if (noteOffsetTimerStarted == true && noteOffsetTimer.ready()) {
+    aSaw2.setFreq(freq2);
+    useNoteOffset = true;
+    noteOffsetTimerStarted = false;
+  }
+
+  if (noteOffset2TimerStarted == true && noteOffset2Timer.ready()) {
+    aSaw3.setFreq(freq3);
+    useNoteOffset2 = true;
+    noteOffset2TimerStarted = false;
+  }
+
   aSaw4.setFreq(freq4);
 
 
@@ -570,6 +601,10 @@ uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, bool t
         ++index %= numNotesInScale;  // always wrap around at the end of the arpeggio
         break;
       case 1:
+        outputNote = scaleNumbers[index];
+        index = (index == 0) ? numNotesInScale - 1 : index - 1;
+        // --index;
+        // index %= numNotesInScale;
         break;
       case 2:
         break;
