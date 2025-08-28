@@ -262,12 +262,13 @@ const uint8_t numNotesInScale = 15;
 const char* scale_EbPentatonicMinor[numNotesInScale] = {"D#2", "F#2", "G#2", "A#2", "C#3", "D#3", "F#3", "G#3", "A#3", "C#4", "D#4", "F#4", "G#4", "A#4", "C#5"};
 uint8_t scaleNumbers_EbPentatonicMinor[numNotesInScale];
 
-uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, bool trigger, uint8_t arpMode, uint8_t arpSpread);
+uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, bool trigger, uint8_t manualIndex, int8_t offset, uint8_t arpMode, uint8_t arpSpread);
 EventDelay arpIntervalTimer;
 bool arpIntervalTimerStarted = false;
 uint16_t arpInterval = 62;
-constexpr uint16_t arpMinInterval = 15, arpMaxInterval = 1000;
+constexpr uint16_t arpMinInterval = 7, arpMaxInterval = 500;
 const IntMap arpIntervalMap(0, 255, arpMaxInterval, arpMinInterval); // reversed so that more red == faster arpeggio
+// const IntMap arpColorToNote(0, 16, 0, numNotesInScale);
 
 
 // **********************************************************************************
@@ -495,28 +496,49 @@ void updateControl() {
   // v2 = mappedGreen;
   // v3 = mappedBlue;
   // v4 = mappedRed;
-  v4 = 127;
+  
+  
+  v2 = 100;
+  v3 = 40;
+  v4 = 100;
+  
 
   // aSaw2.setFreq(mtof(snapToNearestNote((mappedBlue >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
   // aSaw3.setFreq(mtof(snapToNearestNote((mappedRed >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
   // aSaw4.setFreq(mtof(snapToNearestNote((mappedGreen >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
 
 
-  arpInterval = arpIntervalMap(mappedRed);
-  SERIAL_PRINTLN(mappedRed);
+
+  arpInterval = arpIntervalMap(mappedRed);    // this remaps the mapped red data into an interval for time between notes in arpeggio
+  
   if (!arpIntervalTimerStarted) {
     arpIntervalTimer.set(arpInterval);
     arpIntervalTimer.start();
     arpIntervalTimerStarted = true;
   }
 
-  static int16_t currentFreq = 0;
+
+  SERIAL_PRINT(mappedGreen);
+  SERIAL_TAB;
+
+  static uint8_t directIndex = 0;
+  directIndex = min(mappedBlue >> 4, numNotesInScale - 1); // this takes the green color data and remaps it to a note value for the arp, and then makes sure it's in range
+  SERIAL_PRINTLN(directIndex);
+  static int16_t freq4 = 0, freq3 = 0, freq2 = 0;
+  static uint8_t currentNote = 0;
   if (arpIntervalTimer.ready()) {
-    currentFreq = mtof(arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, true, 0, 0));
+    currentNote = arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, true, directIndex, 0, 0, 0);
+    freq4 = mtof(currentNote);
+    freq3 = mtof(arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, true, directIndex - 2, 5, 4, 0));
+    freq2 = mtof(arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, true, directIndex - 3, -3, 0, 0));
     arpIntervalTimerStarted = false;
   }
+  
+  aSaw2.setFreq(freq2);
+  aSaw3.setFreq(freq3);
+  aSaw4.setFreq(freq4);
 
-  aSaw4.setFreq(currentFreq);
+
 
 }
 
@@ -527,10 +549,16 @@ void updateControl() {
  * 1 - down loop
  * 2 - up-down-up loop
  * 3 - random
+ * 4 - manual control of the note index
  * 
  * arpSpread: how many octaves to add to the span of the baseline scale. setting to 1 will expand 1 octave higher.
+ * 
+ * manualIndex: manually control which index in the array gets returned, instead of letting the automatic feature run. Value of
+ * 255 means let automatic mode take over.
+ * 
+ * offset: signed number of steps up or down the scale to offset the output from the input, if direct input, or from the automatic progression
  */
-uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, bool trigger = false, uint8_t arpMode = 0, uint8_t arpSpread = 0) {
+uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, bool trigger = false, uint8_t manualIndex = 255, int8_t offset = 0, uint8_t arpMode = 0, uint8_t arpSpread = 0) {
   static uint8_t index = 0;
   static uint8_t outputNote = 0;
   index %= numNotesInScale;     // safety feature to prevent overflowing array
@@ -547,6 +575,9 @@ uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, bool t
         break;
       case 3:
         break;
+      case 4:
+        manualIndex = (manualIndex + offset) % numNotesInScale;
+        outputNote = scaleNumbers[manualIndex];
       default:
         break;
     }
