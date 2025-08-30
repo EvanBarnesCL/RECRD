@@ -13,6 +13,13 @@
 
 
 
+/**
+ * shit I've learned about Mozzi through struggle and blood:
+ * 
+ * - EventDelay timers have to be global or else they never update. This is almost certainly true of other things in Mozzi as well.
+ *   I had wanted to use a static EventDelay timer in a function that gets called from within updateControl(), but that does not work. 
+ */
+
 
 // if this is defined, the PWM rate for Timer 0 is 62.5kHz, which removes audible PWM noise from driving motors.
 // It has a few side effects. It breaks any use of millis(). delay() also will not work, but I plan to avoid
@@ -35,6 +42,7 @@
 #include <tables/saw2048_int8.h>    // Saw wavetable
 #include <tables/triangle_dist_cubed_2048_int8.h>
 #include <tables/triangle_valve_2_2048_int8.h>
+#include <tables/triangle_warm8192_int8.h>
 #include <IntMap.h>                 // A more efficient replacement for map()
 #include <EventDelay.h>             // Mozzi library for performing actions at specific time intervals without delay() or millis()
 #include <mozzi_utils.h>
@@ -202,9 +210,11 @@ uint8_t getDebouncedButton();                       // performs extra layer of d
 
 // Oscil Wash example sketch stuff
 
-Oscil<TRIANGLE_DIST_CUBED_2048_NUM_CELLS, MOZZI_AUDIO_RATE> aSaw2(TRIANGLE_DIST_CUBED_2048_DATA);
-Oscil<SAW2048_NUM_CELLS, MOZZI_AUDIO_RATE> aSaw3(SAW2048_DATA);
-Oscil<TRIANGLE_VALVE_2_2048_NUM_CELLS, MOZZI_AUDIO_RATE> aSaw4(TRIANGLE_VALVE_2_2048_DATA);
+
+Oscil<TRIANGLE_DIST_CUBED_2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc0(TRIANGLE_DIST_CUBED_2048_DATA);
+// Oscil<SAW2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc1(SAW2048_DATA);
+Oscil<TRIANGLE_VALVE_2_2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc2(TRIANGLE_VALVE_2_2048_DATA);
+Oscil<TRIANGLE_WARM8192_NUM_CELLS, TRIANGLE_WARM8192_SAMPLERATE> osc1(TRIANGLE_WARM8192_DATA);
 
 // audio volumes updated each control interrupt and reused in audio till next control
 // well this is wild. The original example sketch I built this from used char as the datatype, which is not something that
@@ -219,7 +229,7 @@ Oscil<TRIANGLE_VALVE_2_2048_NUM_CELLS, MOZZI_AUDIO_RATE> aSaw4(TRIANGLE_VALVE_2_
 // of that is that the volume is much louder, but it also starts making noise immediately. It's unpleasant sounding until the
 // AutoMaps kick in and start ranging things correctly. I could fix this by adding some kind of volume fade that runs when the
 // program boots up, but I like that with int8_t, it's adaptive to the actual color data it receives and isn't time based.
-int8_t v2, v3, v4;
+int8_t v0, v1, v2;
 
 // **********************************************************************************
 // Music stuff
@@ -262,10 +272,10 @@ const uint8_t numNotesInScale = 15;
 const char* scale_EbPentatonicMinor[numNotesInScale] = {"D#2", "F#2", "G#2", "A#2", "C#3", "D#3", "F#3", "G#3", "A#3", "C#4", "D#4", "F#4", "G#4", "A#4", "C#5"};
 uint8_t scaleNumbers_EbPentatonicMinor[numNotesInScale];
 
-uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, bool trigger, uint8_t manualIndex, int8_t offset, uint8_t arpMode, uint8_t arpSpread);
-EventDelay arpIntervalTimer;
+uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, uint8_t manualIndex, int8_t offset, uint8_t arpMode, uint8_t arpSpread);
+EventDelay arpIntervalTimer, osc1OffsetTimer, osc2OffsetTimer;
 bool arpIntervalTimerStarted = false;
-uint16_t arpInterval = 62;
+uint16_t arpInterval = 125, osc1OffsetInterval = 125, osc2OffsetInterval = 125;
 constexpr uint16_t arpMinInterval = 7, arpMaxInterval = 1000;
 const IntMap arpIntervalMap(0, 255, arpMaxInterval, arpMinInterval); // reversed so that more red == faster arpeggio
 // const IntMap arpColorToNote(0, 16, 0, numNotesInScale);
@@ -276,6 +286,13 @@ uint8_t noteOffsetInterval = 125;
 EventDelay noteOffset2Timer;
 bool noteOffset2TimerStarted = false, useNoteOffset2 = true;
 uint8_t noteOffset2Interval = 125;
+
+
+
+
+void generateControls();      // right now i just want to wrap all the sound control stuff in a function so I can easily separate it out from the rest of updateControl()
+
+
 
 
 // **********************************************************************************
@@ -370,12 +387,12 @@ void setup()
   
   // Oscil wash example sketch stuff
   // set harmonic frequencies
-  aSaw2.setFreq(mtof(noteNameToMIDINote("E2")));
-  aSaw3.setFreq(mtof(noteNameToMIDINote("A3")));
-  aSaw4.setFreq(mtof(noteNameToMIDINote("B4")));
+  osc0.setFreq(mtof(noteNameToMIDINote("E2")));
+  osc1.setFreq(mtof(noteNameToMIDINote("A3")));
+  osc2.setFreq(mtof(noteNameToMIDINote("B4")));
   
-  v2 = v3 = 0;
-  v4 = 127;
+  v0 = v1 = 0;
+  v2 = 127;
   
   // finally, start the timers
   k_i2cUpdateDelay.set(I2C_UPDATE_INTERVAL);      // control how frequently we poll the sensors on the I2C bus (color sensor, both encoders)
@@ -500,78 +517,169 @@ void updateControl() {
   mappedRed = autoRedToVolume(scaledFixedColorData.redFixed.asInt());
 
   // oscil wash example sketch stuff
-  // v2 = mappedGreen;
-  // v3 = mappedBlue;
-  // v4 = mappedRed;
-  
-  
-  v2 = 100;
-  v3 = 50;
-  v4 = 100;
+  // v0 = mappedGreen;
+  // v1 = mappedBlue;
+  // v2 = mappedRed;
   
 
-  // aSaw2.setFreq(mtof(snapToNearestNote((mappedBlue >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
-  // aSaw3.setFreq(mtof(snapToNearestNote((mappedRed >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
-  // aSaw4.setFreq(mtof(snapToNearestNote((mappedGreen >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
+
+  generateControls();
 
 
-
-  arpInterval = arpIntervalMap(mappedRed);    // this remaps the mapped red data into an interval for time between notes in arpeggio
   
-  if (!arpIntervalTimerStarted) {
-    arpIntervalTimer.set(arpInterval);
-    arpIntervalTimer.start();
-    arpIntervalTimerStarted = true;
-  }
-
-
-  SERIAL_PRINT(mappedGreen);
-  SERIAL_TAB;
-
-  static uint8_t directIndex = 0;
-  directIndex = min(mappedBlue >> 4, numNotesInScale - 1); // this takes the green color data and remaps it to a note value for the arp, and then makes sure it's in range
-  SERIAL_PRINTLN(directIndex);
-  static int16_t freq4 = 0, freq3 = 0, freq2 = 0;
-  static uint8_t currentNote = 0;
-  if (arpIntervalTimer.ready()) {
-    currentNote = arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, true, directIndex, 0, 0, 0);
-    freq4 = mtof(currentNote);
-    if (useNoteOffset) {
-      freq2 = mtof(arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, true, directIndex - 3, -3, 0, 0));
-      noteOffsetInterval = arpInterval >> 1;
-      noteOffsetTimer.set(noteOffsetInterval);
-      noteOffsetTimer.start();
-      noteOffsetTimerStarted = true;
-      useNoteOffset = false;
-    }
-    if (useNoteOffset2) {
-      freq3 = mtof(arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, true, directIndex - 2, 5, 4, 0));
-      noteOffset2Interval = arpInterval;
-      noteOffset2Timer.set(noteOffset2Interval);
-      noteOffset2Timer.start();
-      noteOffset2TimerStarted = true;
-      useNoteOffset2 = false;
-    }
-    arpIntervalTimerStarted = false;
-  }
+  // v0 = 100;
+  // v1 = 0;
+  // v2 = 100;
   
-  if (noteOffsetTimerStarted == true && noteOffsetTimer.ready()) {
-    aSaw2.setFreq(freq2);
-    useNoteOffset = true;
-    noteOffsetTimerStarted = false;
-  }
 
-  if (noteOffset2TimerStarted == true && noteOffset2Timer.ready()) {
-    aSaw3.setFreq(freq3);
-    useNoteOffset2 = true;
-    noteOffset2TimerStarted = false;
-  }
+  // // osc0.setFreq(mtof(snapToNearestNote((mappedBlue >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
+  // // osc1.setFreq(mtof(snapToNearestNote((mappedRed >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
+  // // osc2.setFreq(mtof(snapToNearestNote((mappedGreen >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
 
-  aSaw4.setFreq(freq4);
+
+
+  // arpInterval = arpIntervalMap(mappedRed);    // this remaps the mapped red data into an interval for time between notes in arpeggio
+  
+  // if (!arpIntervalTimerStarted) {
+  //   arpIntervalTimer.set(arpInterval);
+  //   arpIntervalTimer.start();
+  //   arpIntervalTimerStarted = true;
+  // }
+
+
+  // // SERIAL_PRINT(mappedRed);
+  // // SERIAL_TAB;
+
+  // static uint8_t directIndex = 0;
+  // directIndex = min(mappedBlue >> 4, numNotesInScale - 1); // this takes the green color data and remaps it to a note value for the arp, and then makes sure it's in range
+  // SERIAL_PRINTLN(directIndex);
+  // static int16_t freq4 = 0, freq3 = 0, freq2 = 0;
+  // static uint8_t currentNote = 0;
+  // if (arpIntervalTimerStarted && arpIntervalTimer.ready()) {
+  //   currentNote = arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, true, directIndex, 0, 0, 0);
+  //   freq4 = mtof(currentNote);
+  //   if (useNoteOffset) {
+  //     freq2 = mtof(arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, true, directIndex - 3, -3, 1, 0));
+  //     noteOffsetInterval = arpInterval >> 1;
+  //     noteOffsetTimer.set(noteOffsetInterval);
+  //     noteOffsetTimer.start();
+  //     noteOffsetTimerStarted = true;
+  //     useNoteOffset = false;
+  //   }
+  //   if (useNoteOffset2) {
+  //     freq3 = mtof(arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, true, directIndex - 2, 5, 4, 0));
+  //     noteOffset2Interval = arpInterval;
+  //     noteOffset2Timer.set(noteOffset2Interval);
+  //     noteOffset2Timer.start();
+  //     noteOffset2TimerStarted = true;
+  //     useNoteOffset2 = false;
+  //   }
+  //   arpIntervalTimerStarted = false;
+  // }
+
+  
+  // if (noteOffsetTimerStarted == true && noteOffsetTimer.ready()) {
+  //   osc0.setFreq(freq2);
+  //   useNoteOffset = true;
+  //   noteOffsetTimerStarted = false;
+  // }
+
+  // if (noteOffset2TimerStarted == true && noteOffset2Timer.ready()) {
+  //   osc1.setFreq(freq3);
+  //   useNoteOffset2 = true;
+  //   noteOffset2TimerStarted = false;
+  // }
+
+  // osc2.setFreq(freq4);
 
 
 
 }
+
+
+
+
+
+void generateControls() {
+  // SERIAL_PRINTLN(arpInterval);
+  static uint8_t note0 = 0, note1 = 0, note2 = 0;
+  static float f0 = 0.0, f1 = 0.0, f2 = 0.0;
+  arpInterval = arpIntervalMap(mappedRed);
+  static bool osc1IntervalStarted = false, osc2IntervalStarted = false;
+
+  static uint8_t phaseI = 0;
+
+  // static uint16_t osc1OffsetInterval = mappedBlue, osc2OffsetInterval = mappedGreen;
+
+  if (!arpIntervalTimerStarted) {
+    arpIntervalTimer.set(arpInterval);
+    arpIntervalTimer.start();
+    arpIntervalTimerStarted = true;
+
+    // osc1OffsetInterval = (arpInterval - mappedBlue);
+    osc1OffsetInterval = (arpInterval > mappedBlue) ? (max(62, arpInterval - mappedBlue)) : 15; 
+    osc1OffsetTimer.set(osc1OffsetInterval);
+    if (!osc1IntervalStarted) {
+      osc1OffsetTimer.start();
+      osc1IntervalStarted = true;
+    }
+
+    osc2OffsetInterval = arpInterval >> 1;
+    osc2OffsetTimer.set(osc2OffsetInterval);
+    if (!osc2IntervalStarted) {
+      osc2OffsetTimer.start();
+      osc2IntervalStarted = true;
+    }
+  }
+
+  if (arpIntervalTimer.ready()) {
+    // get the note
+    note0 = 0 + arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, 0, 0, 0, 0);
+    // convert the MIDI note number to a frequency
+    f0 = mtof(note0);
+    // set the oscillator frequency
+    osc0.setFreq(f0);
+
+    // the arp was triggered, so reset this flag so we can restart the timer next loop
+    arpIntervalTimerStarted = false;
+  }
+  
+  if (osc1OffsetTimer.ready()) {
+    note1 = -12 + arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, 0, -2, 0, 0);
+    f1 = mtof(note1);
+    osc1.setFreq(f1);
+    osc1OffsetTimer.set(osc1OffsetInterval);
+    osc1OffsetTimer.start();
+  }
+  
+  if (osc2OffsetTimer.ready()) {
+    note2 = 0 + arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, 0, 5, 1, 0);
+    f2 = mtof(note2);
+    osc2.setFreq(f2);
+    osc2OffsetTimer.set(osc2OffsetInterval);
+    osc2OffsetTimer.start();
+  }
+  
+  // osc1.setPhase(0);    // mapped green is uint8_t, phase is uint_16t, doing this roughly expands mappedGreen into the appropriate range of values
+
+  v0 = 100;
+  v1 = 100;
+  v2 = 100;
+}
+
+/**
+ * I just realized I've been trying to use the arpeggiator function like a class, where each oscillator can call to it independently and get a unique note back.
+ * But that doesn't work, because the index is a static variable inside arpeggiator! So when I have one osc set to mode 0 (arp up), that increments the index
+ * to return a higher note in the scale each time it's called. But if I have another osc set to mode 1 (arp down), this decrements the index to try to create a falling
+ * arpeggio. These work fine on their own, but when both are active, they fight against each other over the index! This just made a kind of cool sound by accident that
+ * I might keep, but the arpeggiator does actually need to be a class in the long term that isn't a singleton like this. Although that was fun.
+ * 
+ */
+
+
+
+
+
 
 
 /**
@@ -589,34 +697,34 @@ void updateControl() {
  * 
  * offset: signed number of steps up or down the scale to offset the output from the input, if direct input, or from the automatic progression
  */
-uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, bool trigger = false, uint8_t manualIndex = 255, int8_t offset = 0, uint8_t arpMode = 0, uint8_t arpSpread = 0) {
+uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, uint8_t manualIndex = 255, int8_t offset = 0, uint8_t arpMode = 0, uint8_t arpSpread = 0) {
   static uint8_t index = 0;
   static uint8_t outputNote = 0;
   index %= numNotesInScale;     // safety feature to prevent overflowing array
 
-  if (trigger) {
-    switch (arpMode) {
-      case 0:
-        outputNote = scaleNumbers[index];
-        ++index %= numNotesInScale;  // always wrap around at the end of the arpeggio
-        break;
-      case 1:
-        outputNote = scaleNumbers[index];
-        index = (index == 0) ? numNotesInScale - 1 : index - 1;
-        // --index;
-        // index %= numNotesInScale;
-        break;
-      case 2:
-        break;
-      case 3:
-        break;
-      case 4:
-        manualIndex = (manualIndex + offset) % numNotesInScale;
-        outputNote = scaleNumbers[manualIndex];
-      default:
-        break;
-    }
+
+  switch (arpMode) {
+    case 0:
+      outputNote = scaleNumbers[index];
+      ++index %= numNotesInScale;  // always wrap around at the end of the arpeggio
+      break;
+    case 1:
+      outputNote = scaleNumbers[index];
+      index = (index == 0) ? numNotesInScale - 1 : index - 1;
+      // --index;
+      // index %= numNotesInScale;
+      break;
+    case 2:
+      break;
+    case 3:
+      break;
+    case 4:
+      manualIndex = (manualIndex + offset) % numNotesInScale;
+      outputNote = scaleNumbers[manualIndex];
+    default:
+      break;
   }
+
   
   return outputNote;
 }
@@ -630,9 +738,9 @@ uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, bool t
 AudioOutput_t updateAudio() {
   // oscil wash example sketch stuff
   int32_t asig = (int32_t)
-    aSaw2.next() * v2 + 
-    aSaw3.next() * v3 +
-    aSaw4.next() * v4;
+    osc0.next() * v0 + 
+    osc1.next() * v1 +
+    osc2.next() * v2;
 
   return MonoOutput::fromAlmostNBit(17, asig);
 }
@@ -863,7 +971,7 @@ void printColorData() {
     SERIAL_PRINT(mappedRed);
   }
 
-  // SERIAL_PRINT("  "); SERIAL_PRINT(v2);
+  // SERIAL_PRINT("  "); SERIAL_PRINT(v0);
 
   SERIAL_PRINTLN();
 }
