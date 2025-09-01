@@ -53,7 +53,7 @@
 #include <DCfilter.h>               // DC filter used to detect changes in a signal (used for recognizing when arm and table stop moving)
 #include <FastPID.h>                // Fast fixed point math PID implementation used for controlling arm position - might remove
 #include <AutoMap.h>                // A version of map() that is auto-ranging. Used for mapping color values to control signals.
-
+#include <mozzi_rand.h>             // Faster random number generation
 
 /**
  * This is a macro for easily enabling or disabling the Serial monitor print statements. 
@@ -239,7 +239,7 @@ int8_t v0, v1, v2;
 struct Chord {
   const char* notes[4];
 };
-
+/*
 // chord progression vi-I-IV-iii
 Chord Am = {"C3", "E3", "A3", " "};
 Chord Am7 = {"C3", "E3", "A3", "G4"};
@@ -257,6 +257,44 @@ Chord chordProgression[4] = {Am, C, F, Em};
 Chord chordProgressionVaried[4] = {Am7, Cadd9, Fm6, Em7};
 Chord chordProgressionCombined[8] = {Am, Am7, C, Cadd9, F, Fm6, Em, Em7};     // might do a probabilistic version of this where it's like 75% the normal notes, 25% the augmented ones
 
+
+
+const char* testArp[8] = {"C2", "E3", "A3", "G4", "C4", "F4", "G#4", "D5"};
+
+const uint8_t numNotesInScale = 15;
+const char* scale_EbPentatonicMinor[numNotesInScale] = {"D#2", "F#2", "G#2", "A#2", "C#3", "D#3", "F#3", "G#3", "A#3", "C#4", "D#4", "F#4", "G#4", "A#4", "C#5"};
+uint8_t scaleNumbers_EbPentatonicMinor[numNotesInScale];
+
+
+*/
+
+
+// D scale mixolydian diatonic chord progression
+Chord D = {"D3", "F#3", "A3", " "}, Am = {"A3", "C4", "E4", " "}, Em = {"E3", "G3", "B3", " "}, G = {"G3", "B3", "D4", " "};
+const uint8_t numChordsInProgression = 4;
+Chord progression[numChordsInProgression] = {D, Am, Em, G};
+const uint8_t numNotesInScale = 7;
+const char* scale_DMixolydian[numNotesInScale] = {"D3", "E3", "F#3", "G3", "A3", "B3", "C4"};
+
+// typedef uint8_t MIDI_NOTE;    
+using MIDI_NOTE = uint8_t;      // just for readability elsewhere, I'm creating an alias called MIDI_NOTE that is just uint8_t datatype. 
+
+MIDI_NOTE MIDIscale_DMixolydian[numNotesInScale];   // create an array that will contain the midi note numbers for the scale as well
+
+// struct for storing parameters for each oscillator
+struct oscillatorParams {
+  const char* note = 0;
+  const char* lastNote = 0;
+  MIDI_NOTE noteMIDINumber = 0;
+  MIDI_NOTE lastNoteMIDINumber = 0;
+  float frequency = 0.0;
+  uint8_t volume = 0;
+};
+
+oscillatorParams osc0Params, osc1Params, osc2Params;
+
+
+
 void convertArray_NoteNumbersToNames(const uint8_t midiNotes[], uint8_t numNotes, const char* noteNames[]);
 void convertArray_NoteNamesToNumbers(const char* noteNames[], uint8_t numNotes, uint8_t midiNotes[]);
 uint8_t snapToNearestNote(uint8_t inputValue, const uint8_t notes[], uint8_t numNotes);
@@ -266,13 +304,9 @@ uint8_t noteNameToMIDINote(const char* noteName);          // convert note names
 const char* MIDINoteToNoteName(uint8_t note);     // convert MIDI note to note name (e.g., 42 -> F#2)
 
 
-const char* testArp[8] = {"C2", "E3", "A3", "G4", "C4", "F4", "G#4", "D5"};
-
-const uint8_t numNotesInScale = 15;
-const char* scale_EbPentatonicMinor[numNotesInScale] = {"D#2", "F#2", "G#2", "A#2", "C#3", "D#3", "F#3", "G#3", "A#3", "C#4", "D#4", "F#4", "G#4", "A#4", "C#5"};
-uint8_t scaleNumbers_EbPentatonicMinor[numNotesInScale];
 
 uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, uint8_t manualIndex, int8_t offset, uint8_t arpMode, uint8_t arpSpread);
+
 EventDelay arpIntervalTimer, osc1OffsetTimer, osc2OffsetTimer;
 bool arpIntervalTimerStarted = false;
 uint16_t arpInterval = 125, osc1OffsetInterval = 125, osc2OffsetInterval = 125;
@@ -301,6 +335,8 @@ void generateControls();      // right now i just want to wrap all the sound con
 
 void setup() 
 {
+  randSeed(analogRead(A7));     // initialize the random number seed
+
   if (USE_SERIAL) Serial.begin(115200);
   SERIAL_PRINTLN("starting");
 
@@ -383,7 +419,8 @@ void setup()
   }
 
   // the scaleNumers_EbPentatonicMinor array needs to be initialized
-  convertArray_NoteNamesToNumbers(scale_EbPentatonicMinor, numNotesInScale, scaleNumbers_EbPentatonicMinor);
+  // convertArray_NoteNamesToNumbers(scale_EbPentatonicMinor, numNotesInScale, scaleNumbers_EbPentatonicMinor);
+  convertArray_NoteNamesToNumbers(scale_DMixolydian, numNotesInScale, MIDIscale_DMixolydian);
   
   // Oscil wash example sketch stuff
   // set harmonic frequencies
@@ -598,8 +635,105 @@ void updateControl() {
 
 
 
+/** 
+ * mapping out what I want:
+ * 
+ * I think that I want to have it mostly be chords, with occasional bursts of arpeggios. So two oscillators always play long sustained notes to generate triads
+ * or dyads. Then the third oscillator joins in either triads, or breaks into an arpeggio. I think that instead of having each note be selected from the scale based
+ * on color value, I need to have color data select which chord is playing (with some probabilistic drift I think to keep it from repeating exactly). Osc0 will play
+ * note0 from that chord, osc1 plays note1, and osc2 either plays note2, or else breaks into arp.
+ * 
+ * For arpeggiation, I think that the probability of arping should come from one of the color channels. So if there's a lot of red, an arp should be more likely,
+ * but not guaranteed. The arpeggio should be notes from within a chord or two of the chosen progression. I can have the number of chords chosen be the spread of the arp,
+ * and I could have those chosen randomly. Offset each new chord added to the arp by an octave to keep it distinct.
+ * 
+ * I can also have sound parameters driven by color value, but I want some randomnessa in that motion too. For example, I want to add amp envelopes to everything, but
+ * I could have the ADSR partially modulated by color + randomness. 
+ * 
+ * 
+ * Thinking I might drop into mixolydian mode
+ *  key of D, so D mixolydian, diatonically from the scale
+ *    I-v-ii-IV, so D, Am, Em, G
+ *    
+ *  chords in D mixolydian scale
+ * degree       I         iim       iii         IV      v         vi        bVII
+ * note         D         E         F#          G       A         B         C
+ * chord        D         Em        F#dim       G       Am        Bm        C
+ * chord note   D,F#,A    E,G,B     F#,A,C      G,B,D   A,C,E     B,D,F#    C,E,G
+ * 
+ 
+Chord D = {"D3", "F#3", "A3", " "}, Am = {"A3", "C4", "E4", " "}, Em = {"E3", "G3", "B3", " "}, G = {"G3", "B3", "D4", " "};
+Chord progression = {D, Am, Em, G};
 
 
+ * 
+ * 
+ * General algorithm:
+ *  - define the chords, the scale, and the chord progression as arrays
+ *  - initialize the random seed
+ *  - two possible paths here: 
+ *      - have the color data map to the probability of moving to the next chord in the progression;
+ *        - this would be something like: uint8_t nextChord = (rand(256) < mappedGreen) ? 1 : 0; where more green makes it more likely to switch to next chord
+ *        - this also needs to have update times between chord changes. So maybe mappedRed determines the time between chord changes. Chord only changes when
+ *            previous chord's time has elapsed.
+ *      - or, have the color data directly select the chord in the progression, probably with some random noise to keep it interesting.
+ *        - uint8_t chosenChord = map(mappedGreen, 0, 256, 0, 4);   // the amount of green directly chooses a chord in the progression
+ *        - time between chords is again set by another color channel
+ *  - in either of those two cases, set notes for the first 2 oscs based on the chosen chord, so osc0 plays note0, osc1 plays note1. 
+ *      - could add some sauce where another color channel or just a constant random probability potentially increases/decreases the value of the note played by
+ *        osc1 by an octave, just to build some inversions and keep it interesting
+ *  - Osc3 is either the 3rd voice in the chord, or it breaks into arpeggio
+ *      - bool arpeggiate = (rand(256) < mappedBlue) ? true : false;    // the more blue their is, the more likely arpeggiation is
+ *      - if (!arpeggiate) {
+ *          osc2 = note2 in chosen chord
+ *        } else {
+ *          - choose how many chords will go into the arpeggio, so maybe random between 1 and 3. or choose random number of notes from the D mixolydian scale.
+ *            the randomness for either of these could be direct or color modulated
+ *          - if we're going random chords route, take the notes from each chord and put them in the arp array as their constituent notes, adding 12 to the midi
+ *          - value for the notes of each subsequent chord. or else just add the first n notes from the scale.
+ *          - choose the baseline time interval between arp notes: baseInterval = rand(15, max(31, 256 - mappedRed));  // more red -> less time between notes
+ *          - set a flag value to show arpeggio started: bool arping = true;
+ *        }
+ *  - if we are arpeggiating, call the arp function for each new note until we've used all of them in the array, the set arping = false;
+ * 
+ */
+
+void generateControls() {
+  // parameter containers for three oscillators
+  static uint16_t arpInterval = 0;        // time between arp notes
+  bool arpeggiate = false;                // flag that indicates that we should arp
+  bool arpInProgress = false;
+  static Chord currentChord = progression[0], lastChord = currentChord;
+
+  currentChord = progression[mappedGreen >> 6];    // should shift this down from 0-255 to 0-3
+  // currentChord = progression[3];
+  osc0Params.note = getNoteFromArpeggio(currentChord.notes, 4, 0);
+  osc0Params.noteMIDINumber = noteNameToMIDINote(osc0Params.note);
+  osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
+  osc0.setFreq(osc0Params.frequency);
+  osc0Params.volume = 200;
+  SERIAL_PRINT(osc0Params.noteMIDINumber);
+  SERIAL_TAB;
+
+  osc1Params.noteMIDINumber = noteNameToMIDINote(osc1Params.note);
+  osc1Params.note = getNoteFromArpeggio(currentChord.notes, 4, 1);
+  osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
+  osc1.setFreq(osc1Params.frequency);
+  osc1Params.volume = 200;
+  SERIAL_PRINT(osc1Params.noteMIDINumber);
+  SERIAL_TAB;
+
+  osc2Params.note = getNoteFromArpeggio(currentChord.notes, 4, 2);
+  osc2Params.noteMIDINumber = noteNameToMIDINote(osc2Params.note);
+  osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
+  osc2.setFreq(osc2Params.frequency);
+  osc2Params.volume = 200;
+  SERIAL_PRINTLN(osc2Params.noteMIDINumber);
+  
+}
+
+
+/*
 void generateControls() {
   // SERIAL_PRINTLN(arpInterval);
   static uint8_t note0 = 0, note1 = 0, note2 = 0;
@@ -666,6 +800,8 @@ void generateControls() {
   v1 = 100;
   v2 = 100;
 }
+
+*/
 
 /**
  * I just realized I've been trying to use the arpeggiator function like a class, where each oscillator can call to it independently and get a unique note back.
@@ -738,9 +874,9 @@ uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, uint8_
 AudioOutput_t updateAudio() {
   // oscil wash example sketch stuff
   int32_t asig = (int32_t)
-    osc0.next() * v0 + 
-    osc1.next() * v1 +
-    osc2.next() * v2;
+    osc0.next() * osc0Params.volume + 
+    osc1.next() * osc1Params.volume +
+    osc2.next() * osc2Params.volume;
 
   return MonoOutput::fromAlmostNBit(17, asig);
 }
