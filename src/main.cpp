@@ -55,6 +55,7 @@
 #include <AutoMap.h>                // A version of map() that is auto-ranging. Used for mapping color values to control signals.
 #include <mozzi_rand.h>             // Faster random number generation
 #include <Portamento.h>
+#include <ADSR.h> 
 
 
 /**
@@ -345,6 +346,8 @@ oscillatorParams osc0Params, osc1Params, osc2Params;
 
 Portamento<MOZZI_CONTROL_RATE> osc0Portamento, osc1Portamento, osc2Portamento;
 
+ADSR <MOZZI_CONTROL_RATE, MOZZI_CONTROL_RATE> osc0AmpEnv, osc1AmpEnv, osc2AmpEnv;   // ADSR envelopes for all three oscillators
+
 
 void convertArray_NoteNumbersToNames(const uint8_t midiNotes[], uint8_t numNotes, const char* noteNames[]);
 void convertArray_NoteNamesToNumbers(const char* noteNames[], uint8_t numNotes, uint8_t midiNotes[]);
@@ -373,7 +376,7 @@ bool noteOffset2TimerStarted = false, useNoteOffset2 = true;
 uint8_t noteOffset2Interval = 125;
 */
 
-EventDelay chordTimer, arpDurationTimer, arpNoteTimer;
+EventDelay chordTimer, arpDurationTimer, arpNoteTimer, arpTimeout;
 const IntMap colorToScaleNote(0, 255, 0, numNotesInScale - 1);
 
 
@@ -493,6 +496,10 @@ void setup()
   k_i2cUpdateDelay.set(I2C_UPDATE_INTERVAL);      // control how frequently we poll the sensors on the I2C bus (color sensor, both encoders)
   k_PIDupdate.set(1000 / PID_HZ);                 // update rate for the PID controller that manages the arm position
   
+  osc0AmpEnv.setADLevels(160, 140);
+  osc1AmpEnv.setADLevels(80, 60);
+  osc2AmpEnv.setADLevels(160, 140);
+
   // start Mozzi
   startMozzi(MOZZI_CONTROL_RATE);
 }
@@ -514,6 +521,8 @@ void updateControl() {
     reactToDCTimer.start();
     buttonTimer.set(100);    //125ms is exactly 1/16th notes for 120bpm in 4/4
     buttonTimer.start();
+    arpTimeout.set(4000);
+    arpTimeout.start();
     initialize = false;
   }
 
@@ -763,32 +772,120 @@ Chord progression = {D, Am, Em, G};
 
 void generateControls() {
   uint8_t i = colorToScaleNote(mappedRed);
+  static int8_t arpIndex = 0;
+  static uint8_t numNotesLeftInArp = 0;
+  static bool initialize = true;
+
+  static uint16_t attack = 100, decay = 500, sustain = 8000, release = 3000;
 
   int8_t octaveShifter = (int8_t)(mappedWhite >> 6);
+  static bool arpeggiate = false, arpStarted = false, arpOnTimeOut = true;
+
+  if (initialize) {
+    osc0AmpEnv.setADLevels(160, 140);
+    osc1AmpEnv.setADLevels(60, 40);
+    osc2AmpEnv.setADLevels(120, 110);
+    osc0AmpEnv.setTimes(attack, decay, sustain, release);
+    osc1AmpEnv.setTimes(attack, decay, sustain, release);
+    osc2AmpEnv.setTimes(attack, decay, sustain, release);
+  }
+
+  
   octaveShifter = max(-1, octaveShifter - 2); // should set octaveShifter to -1, 0, or 1 octaves added
   SERIAL_PRINTLN(octaveShifter);
   // octaveShifter *= 12;  //make that actual midi note values by multiplying by 12 to get movement
+
+  if (arpTimeout.ready()) {   // it's been long enough to allow an arpeggio again
+    arpOnTimeOut = false;
+  }
+
+  if (octaveShifter > 0 && !arpOnTimeOut) {   // arp is allowed again and triggered by enough white light
+    arpeggiate = true;
+  }
+  
+  if (osc0Params.lastNoteMIDINumber != osc0Params.noteMIDINumber) {
+    osc0AmpEnv.noteOff();
+    osc0AmpEnv.noteOn();
+    osc0Params.lastNoteMIDINumber = osc0Params.noteMIDINumber;
+  }
   
   osc0Params.noteMIDINumber = scale_CLydian[i];
-  osc0Params.volume = 150;
   osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
   osc0.setFreq(osc0Params.frequency);
+  osc0AmpEnv.update();
+  osc0Params.volume = osc0AmpEnv.next();
+  
+  
   
   uint8_t j = colorToScaleNote(mappedGreen);
   // osc1Params.noteMIDINumber = scale_CLydian[(i + 2 ) % numNotesInScale] + octaveShifter;
+  
+  if (osc1Params.lastNoteMIDINumber != osc1Params.noteMIDINumber) {
+    osc1AmpEnv.noteOn();
+    osc1Params.lastNoteMIDINumber = osc1Params.noteMIDINumber;
+  }
+  
   osc1Params.noteMIDINumber = scale_CLydian[j];
   osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
-  osc1Params.volume = 60;
   osc1.setFreq(osc1Params.frequency);
+  osc1AmpEnv.update();
+  osc1Params.volume = osc1AmpEnv.next();
 
-  uint8_t k = colorToScaleNote(mappedBlue);
 
-  // osc2Params.noteMIDINumber = scale_CLydian[k] + octaveShifter;
-  osc2Params.noteMIDINumber = scale_CLydian[(i + 3) % numNotesInScale] + (octaveShifter * 12);     // pretty good
-  // osc2Params.noteMIDINumber = scale_CLydian[(i + 3) % numNotesInScale] - 7;
-  osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
-  osc2Params.volume = 120;
-  osc2.setFreq(osc2Params.frequency);
+  if (!arpeggiate) {
+        
+    // osc2Params.noteMIDINumber = scale_CLydian[k] + octaveShifter;
+    osc2Params.noteMIDINumber = scale_CLydian[(i + 3) % numNotesInScale] + (octaveShifter * 12);     // pretty good
+    // osc2Params.noteMIDINumber = scale_CLydian[(i + 3) % numNotesInScale] - 7;
+    if (osc2Params.lastNoteMIDINumber != osc2Params.noteMIDINumber) {
+      osc2AmpEnv.noteOn();
+      osc2Params.lastNoteMIDINumber = osc2Params.noteMIDINumber;
+    }
+    
+    osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
+    osc2.setFreq(osc2Params.frequency);
+    osc2AmpEnv.update();
+    osc2Params.volume = osc2AmpEnv.next();
+
+  } else {
+    if (!arpStarted) {
+      arpDurationTimer.set(max(250, mappedWhite << 3));
+      arpDurationTimer.start();
+
+      numNotesLeftInArp = rand(4, 17);
+
+      arpStarted = true;
+      arpNoteTimer.set(min(mappedBlue << 0, 125));
+      arpNoteTimer.start();
+      arpIndex = rand(numNotesInScale);
+    }
+    if (arpNoteTimer.ready()) {
+      osc2Params.noteMIDINumber = scale_CLydian[arpIndex] + (12 * (int8_t)rand(0, 3));
+      osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
+      osc2Params.volume = 120;
+      osc2.setFreq(osc2Params.frequency);
+      int8_t arpShift = rand(-5, 6);
+      arpIndex += arpShift;   // move to next note in sequence
+      // if (arpIndex < 0) {
+      //   arpIndex += numNotesInScale;
+      // } else if (arpIndex > numNotesInScale - 1) {
+      //   arpIndex -= numNotesInScale;
+      // }
+      arpIndex = (arpIndex < numNotesInScale && arpIndex >= 0) ? arpIndex : ((arpIndex < 0) ? arpIndex += numNotesInScale : arpIndex -= numNotesInScale);
+      arpNoteTimer.start();
+      numNotesLeftInArp -= 1;    // we have one fewer notes left in the arp
+    }
+
+    if (numNotesLeftInArp == 0) {
+      arpeggiate = false;
+      arpStarted = false;
+      arpTimeout.set(mappedGreen << 4);
+      arpTimeout.start();
+      arpOnTimeOut = true;
+    }
+
+  }
+  // osc2Params.volume = 0;
   
   // static Chord currentChord = progression[1], lastChord = currentChord;
   // uint8_t i = colorToScaleNote(mappedRed);
