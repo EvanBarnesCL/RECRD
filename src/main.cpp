@@ -325,7 +325,11 @@ Chord progression[numChordsInProgression] = {Cmaj_I, Ddim_ii, Emin_iii,Fmin_iv, 
 // typedef uint8_t MIDI_NOTE;    
 using MIDI_NOTE = uint8_t;      // just for readability elsewhere, I'm creating an alias called MIDI_NOTE that is just uint8_t datatype. 
 
-MIDI_NOTE MIDIscale_DMixolydian[numNotesInScale];   // create an array that will contain the midi note numbers for the scale as well
+
+
+constexpr MIDI_NOTE root_CLydianScale = 48;     // MIDI note number for C3
+constexpr MIDI_NOTE scale_CLydian[numNotesInScale] = {root_CLydianScale, root_CLydianScale + 2, root_CLydianScale + 4, root_CLydianScale + 6, root_CLydianScale + 7, root_CLydianScale + 9, root_CLydianScale + 11};
+
 
 // struct for storing parameters for each oscillator
 struct oscillatorParams {
@@ -371,6 +375,10 @@ uint8_t noteOffset2Interval = 125;
 
 EventDelay chordTimer, arpDurationTimer, arpNoteTimer;
 const IntMap colorToScaleNote(0, 255, 0, numNotesInScale - 1);
+
+
+uint8_t mainLPReso = 50, mainLPCutoff = 100;
+
 
 
 void generateControls();      // right now i just want to wrap all the sound control stuff in a function so I can easily separate it out from the rest of updateControl()
@@ -603,12 +611,12 @@ void updateControl() {
   mappedGreen = autoGreenToUINT8_T(scaledFixedColorData.greenFixed.asInt());
   mappedBlue = autoBlueToUINT8_T(scaledFixedColorData.blueFixed.asInt());
   mappedRed = autoRedToUINT8_T(scaledFixedColorData.redFixed.asInt());
+  mappedWhite = autoWhiteToUINT8_T(scaledFixedColorData.clearFixed.asInt());
 
   // oscil wash example sketch stuff
   // v0 = mappedGreen;
   // v1 = mappedBlue;
   // v2 = mappedRed;
-  
 
 
   generateControls();
@@ -754,30 +762,53 @@ Chord progression = {D, Am, Em, G};
 
 
 void generateControls() {
-  static Chord currentChord = progression[1], lastChord = currentChord;
   uint8_t i = colorToScaleNote(mappedRed);
 
-  osc0Params.note = scale_CHarmonicMajor[i];
-  osc0Params.noteMIDINumber = noteNameToMIDINote(osc0Params.note);
-  osc0Params.frequency = mtof(osc0Params.noteMIDINumber + 12);
-  osc0Params.volume = 180;
-
+  int8_t octaveShifter = (int8_t)(mappedWhite >> 6);
+  octaveShifter = max(-1, octaveShifter - 2); // should set octaveShifter to -1, 0, or 1 octaves added
+  SERIAL_PRINTLN(octaveShifter);
+  octaveShifter *= 12;  //make that actual midi note values by multiplying by 12 to get movement
+  
+  osc0Params.noteMIDINumber = scale_CLydian[i];
+  osc0Params.volume = 150;
+  osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
   osc0.setFreq(osc0Params.frequency);
-
-  i = colorToScaleNote(mappedGreen);
-  osc1Params.note = scale_CHarmonicMajor[i];
-  osc1Params.noteMIDINumber = noteNameToMIDINote(osc1Params.note);
-  osc1Params.frequency = mtof(osc1Params.noteMIDINumber + 0);
-  osc1Params.volume = 50;
+  
+  osc1Params.noteMIDINumber = scale_CLydian[(i + 2 ) % numNotesInScale] + octaveShifter;
+  osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
+  osc1Params.volume = 60;
   osc1.setFreq(osc1Params.frequency);
 
-  i = colorToScaleNote(mappedRed);
-  i = (i + 3) % numNotesInScale;
-  osc2Params.note = scale_CHarmonicMajor[i];
-  osc1Params.noteMIDINumber = noteNameToMIDINote(osc2Params.note);
-  osc1Params.frequency = mtof(osc2Params.noteMIDINumber + 24);
-  osc2Params.volume = 160;
-  osc2.setFreq(osc2Params.frequency);  
+  osc2Params.noteMIDINumber = scale_CLydian[(i + 3) % numNotesInScale] - 7;
+  osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
+  osc2Params.volume = 120;
+  osc2.setFreq(osc2Params.frequency);
+  
+  // static Chord currentChord = progression[1], lastChord = currentChord;
+  // uint8_t i = colorToScaleNote(mappedRed);
+
+
+  // osc0Params.note = scale_CHarmonicMajor[i];
+  // osc0Params.noteMIDINumber = noteNameToMIDINote(osc0Params.note);
+  // osc0Params.frequency = mtof(osc0Params.noteMIDINumber + 12);
+  // osc0Params.volume = 180;
+
+  // osc0.setFreq(osc0Params.frequency);
+
+  // i = colorToScaleNote(mappedGreen);
+  // osc1Params.note = scale_CHarmonicMajor[i];
+  // osc1Params.noteMIDINumber = noteNameToMIDINote(osc1Params.note);
+  // osc1Params.frequency = mtof(osc1Params.noteMIDINumber + 0);
+  // osc1Params.volume = 60;
+  // osc1.setFreq(osc1Params.frequency);
+
+  // i = colorToScaleNote(mappedRed);
+  // i = (i + 3) % numNotesInScale;
+  // osc2Params.note = scale_CHarmonicMajor[i];
+  // osc1Params.noteMIDINumber = noteNameToMIDINote(osc2Params.note);
+  // osc1Params.frequency = mtof(osc2Params.noteMIDINumber + 24);
+  // osc2Params.volume = 120;
+  // osc2.setFreq(osc2Params.frequency);  
 
 
   // if (osc0Params.lastNote != osc0Params.note) {
@@ -824,12 +855,12 @@ void generateControls() {
 }
 
 
- // version that finds closest reference color
+//  version that finds closest reference color
 // void generateControls() {
 
-//   // SERIAL_PRINT(mappedRed); SERIAL_TAB; SERIAL_PRINT(mappedGreen); SERIAL_TAB; SERIAL_PRINTLN(mappedBlue);
-//   ReferenceColor closestColor = findClosestColor(mappedRed, mappedGreen, mappedBlue);
-//   SERIAL_PRINTLN(closestColor.name);
+//   SERIAL_PRINT(mappedRed); SERIAL_TAB; SERIAL_PRINT(mappedGreen); SERIAL_TAB; SERIAL_PRINT(mappedBlue); SERIAL_TAB; SERIAL_PRINTLN(mappedWhite);
+//   // ReferenceColor closestColor = findClosestColor(mappedRed, mappedGreen, mappedBlue);
+//   // SERIAL_PRINTLN(closestColor.name);
 // }
 
 /*
@@ -1063,6 +1094,8 @@ AudioOutput_t updateAudio() {
     osc0.next() * osc0Params.volume + 
     osc1.next() * osc1Params.volume +
     osc2.next() * osc2Params.volume;
+
+  // asig = (int32_t) mainLPFilter.next(asig);
 
   return MonoOutput::fromAlmostNBit(17, asig);
 }
