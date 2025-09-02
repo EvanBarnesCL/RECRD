@@ -767,7 +767,7 @@ void generateControls() {
   int8_t octaveShifter = (int8_t)(mappedWhite >> 6);
   octaveShifter = max(-1, octaveShifter - 2); // should set octaveShifter to -1, 0, or 1 octaves added
   SERIAL_PRINTLN(octaveShifter);
-  octaveShifter *= 12;  //make that actual midi note values by multiplying by 12 to get movement
+  // octaveShifter *= 12;  //make that actual midi note values by multiplying by 12 to get movement
   
   osc0Params.noteMIDINumber = scale_CLydian[i];
   osc0Params.volume = 150;
@@ -784,7 +784,7 @@ void generateControls() {
   uint8_t k = colorToScaleNote(mappedBlue);
 
   // osc2Params.noteMIDINumber = scale_CLydian[k] + octaveShifter;
-  osc2Params.noteMIDINumber = scale_CLydian[(i + 3) % numNotesInScale] + octaveShifter;     // pretty good
+  osc2Params.noteMIDINumber = scale_CLydian[(i + 3) % numNotesInScale] + (octaveShifter * 12);     // pretty good
   // osc2Params.noteMIDINumber = scale_CLydian[(i + 3) % numNotesInScale] - 7;
   osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
   osc2Params.volume = 120;
