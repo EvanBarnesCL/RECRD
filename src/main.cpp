@@ -54,7 +54,8 @@
 #include <FastPID.h>                // Fast fixed point math PID implementation used for controlling arm position - might remove
 #include <AutoMap.h>                // A version of map() that is auto-ranging. Used for mapping color values to control signals.
 #include <mozzi_rand.h>             // Faster random number generation
-#include <RollingAverage.h>
+#include <Portamento.h>
+
 
 /**
  * This is a macro for easily enabling or disabling the Serial monitor print statements. 
@@ -191,7 +192,7 @@ constexpr uint8_t NUM_BRIGHTNESS_LEVELS = 5;
 uint8_t LEDBrightnessLevels[NUM_BRIGHTNESS_LEVELS] = {0, 32, 64, 192, 255};
 uint8_t brightnessIterator = 3; // default to brightness level 3 on startup
 
-RollingAverage<uint8_t, 32> avgRed, avgBlue, avgGreen;
+
 
 
 struct ReferenceColor {
@@ -237,9 +238,9 @@ uint8_t getDebouncedButton();                       // performs extra layer of d
 
 
 Oscil<TRIANGLE_DIST_CUBED_2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc0(TRIANGLE_DIST_CUBED_2048_DATA);
-// Oscil<SAW2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc1(SAW2048_DATA);
+Oscil<SAW2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc1(SAW2048_DATA);
 Oscil<TRIANGLE_VALVE_2_2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc2(TRIANGLE_VALVE_2_2048_DATA);
-Oscil<TRIANGLE_WARM8192_NUM_CELLS, TRIANGLE_WARM8192_SAMPLERATE> osc1(TRIANGLE_WARM8192_DATA);
+// Oscil<TRIANGLE_WARM8192_NUM_CELLS, TRIANGLE_WARM8192_SAMPLERATE> osc1(TRIANGLE_WARM8192_DATA);
 
 // audio volumes updated each control interrupt and reused in audio till next control
 // well this is wild. The original example sketch I built this from used char as the datatype, which is not something that
@@ -295,14 +296,30 @@ uint8_t scaleNumbers_EbPentatonicMinor[numNotesInScale];
 
 
 // D scale mixolydian diatonic chord progression
-Chord D = {"A2", "D3", "F#3", " "}, Am = {"A2", "C3", "E3", " "}, Em = {"G3", "B3", "E4", " "}, G = {"G3", "B3", "D4", " "};
-Chord DVar1 = {"D2", "F#2", "A2", " "}, AmVar1 = {"A2", "E3", "C4", " "}, EmVar1 = {"E3", "G3", "B3", " "}, GVar1 = {"G3", "B3", "D4", " "};
-const uint8_t numChordsInProgression = 4;
-Chord progression[numChordsInProgression] = {D, Am, Em, G};
-const uint8_t numNotesInScale = 7;
-const char* scale_DMixolydian[numNotesInScale] = {"D3", "E3", "F#3", "G3", "A3", "B3", "C4"};
+// Chord D = {"A2", "D3", "F#3", " "}, Am = {"A2", "C3", "E3", " "}, Em = {"G3", "B3", "E4", " "}, G = {"G3", "B3", "D4", " "};
+// Chord DVar1 = {"D2", "F#2", "A2", " "}, AmVar1 = {"A2", "E3", "C4", " "}, EmVar1 = {"E3", "G3", "B3", " "}, GVar1 = {"G3", "B3", "D4", " "};
+// const uint8_t numChordsInProgression = 4;
+// Chord progression[numChordsInProgression] = {D, Am, Em, G};
+// const uint8_t numNotesInScale = 7;
+// const char* scale_DMixolydian[numNotesInScale] = {"D3", "E3", "F#3", "G3", "A3", "B3", "C4"};
+// Chord progressionVar1[numChordsInProgression] = {DVar1, AmVar1, EmVar1, GVar1};
 
-Chord progressionVar1[numChordsInProgression] = {DVar1, AmVar1, EmVar1, GVar1};
+
+
+
+// C harmonic major scale
+constexpr uint8_t numNotesInScale = 7;
+const char* scale_CHarmonicMajor[] = {"C2", "D2", "E2", "F2", "G2" "G#2", "B2"};
+Chord Cmaj_I = {scale_CHarmonicMajor[0], scale_CHarmonicMajor[2], scale_CHarmonicMajor[4]};
+Chord Ddim_ii = {scale_CHarmonicMajor[1], scale_CHarmonicMajor[3], scale_CHarmonicMajor[5]};
+Chord Emin_iii = {scale_CHarmonicMajor[2], scale_CHarmonicMajor[4], scale_CHarmonicMajor[6]};
+Chord Fmin_iv = {scale_CHarmonicMajor[3], scale_CHarmonicMajor[4], scale_CHarmonicMajor[0]};
+Chord Gmaj_V = {scale_CHarmonicMajor[4], scale_CHarmonicMajor[6], scale_CHarmonicMajor[1]};
+Chord GSharpAug_VI = {scale_CHarmonicMajor[5], scale_CHarmonicMajor[0], scale_CHarmonicMajor[2]};
+Chord Bdim_vii = {scale_CHarmonicMajor[6], scale_CHarmonicMajor[1], scale_CHarmonicMajor[3]};
+
+constexpr uint8_t numChordsInProgression = 7;
+Chord progression[numChordsInProgression] = {Cmaj_I, Ddim_ii, Emin_iii,Fmin_iv, Gmaj_V, GSharpAug_VI, Bdim_vii};
 
 
 // typedef uint8_t MIDI_NOTE;    
@@ -322,6 +339,7 @@ struct oscillatorParams {
 
 oscillatorParams osc0Params, osc1Params, osc2Params;
 
+Portamento<MOZZI_CONTROL_RATE> osc0Portamento, osc1Portamento, osc2Portamento;
 
 
 void convertArray_NoteNumbersToNames(const uint8_t midiNotes[], uint8_t numNotes, const char* noteNames[]);
@@ -352,7 +370,7 @@ uint8_t noteOffset2Interval = 125;
 */
 
 EventDelay chordTimer, arpDurationTimer, arpNoteTimer;
-
+const IntMap colorToScaleNote(0, 255, 0, numNotesInScale - 1);
 
 
 void generateControls();      // right now i just want to wrap all the sound control stuff in a function so I can easily separate it out from the rest of updateControl()
@@ -451,7 +469,8 @@ void setup()
 
   // the scaleNumers_EbPentatonicMinor array needs to be initialized
   // convertArray_NoteNamesToNumbers(scale_EbPentatonicMinor, numNotesInScale, scaleNumbers_EbPentatonicMinor);
-  convertArray_NoteNamesToNumbers(scale_DMixolydian, numNotesInScale, MIDIscale_DMixolydian);
+  
+  // convertArray_NoteNamesToNumbers(scale_DMixolydian, numNotesInScale, MIDIscale_DMixolydian);
   
   // Oscil wash example sketch stuff
   // set harmonic frequencies
@@ -733,12 +752,85 @@ Chord progression = {D, Am, Em, G};
  */
 
 
-void generateControls() {
 
-  // SERIAL_PRINT(mappedRed); SERIAL_TAB; SERIAL_PRINT(mappedGreen); SERIAL_TAB; SERIAL_PRINTLN(mappedBlue);
-  ReferenceColor closestColor = findClosestColor(mappedRed, mappedGreen, mappedBlue);
-  SERIAL_PRINTLN(closestColor.name);
+void generateControls() {
+  static Chord currentChord = progression[1], lastChord = currentChord;
+  uint8_t i = colorToScaleNote(mappedRed);
+
+  osc0Params.note = scale_CHarmonicMajor[i];
+  osc0Params.noteMIDINumber = noteNameToMIDINote(osc0Params.note);
+  osc0Params.frequency = mtof(osc0Params.noteMIDINumber + 12);
+  osc0Params.volume = 180;
+
+  osc0.setFreq(osc0Params.frequency);
+
+  i = colorToScaleNote(mappedGreen);
+  osc1Params.note = scale_CHarmonicMajor[i];
+  osc1Params.noteMIDINumber = noteNameToMIDINote(osc1Params.note);
+  osc1Params.frequency = mtof(osc1Params.noteMIDINumber + 0);
+  osc1Params.volume = 50;
+  osc1.setFreq(osc1Params.frequency);
+
+  i = colorToScaleNote(mappedRed);
+  i = (i + 3) % numNotesInScale;
+  osc2Params.note = scale_CHarmonicMajor[i];
+  osc1Params.noteMIDINumber = noteNameToMIDINote(osc2Params.note);
+  osc1Params.frequency = mtof(osc2Params.noteMIDINumber + 24);
+  osc2Params.volume = 160;
+  osc2.setFreq(osc2Params.frequency);  
+
+
+  // if (osc0Params.lastNote != osc0Params.note) {
+  //   osc0Portamento.setTime(mappedGreen);
+  //   osc0Portamento.start(osc0Params.noteMIDINumber);
+  // }
+
+  // osc0.setFreq_Q16n16(osc0Portamento.next());
+
+  // if (mappedRed > mappedGreen) {
+  //   i = colorToScaleNote(mappedGreen + ((mappedRed - mappedGreen) >> 1)); // this should get me something like the average between red and green
+  // } else if (mappedGreen > mappedRed) {
+  //   i = colorToScaleNote(mappedGreen - ((mappedRed - mappedGreen) >> 1));
+  // } else {
+  //   i = colorToScaleNote(mappedGreen);
+  // }
+  // osc1Params.note = scale_DMixolydian[i];
+  // osc1Params.noteMIDINumber = noteNameToMIDINote(osc1Params.note);
+  // osc1Params.frequency = mtof(osc1Params.noteMIDINumber -12);
+  // osc1Params.volume = 200;  
+  
+  
+  
+  // i = (i + 3) % numNotesInScale;
+  // osc1Params.note = scale_DMixolydian[i];
+  // osc1Params.noteMIDINumber = noteNameToMIDINote(osc1Params.note);
+  // osc1Params.frequency = mtof(osc1Params.noteMIDINumber -12);
+  // osc1Params.volume = 200;  
+  // osc1.setFreq(osc1Params.frequency);
+  
+  // if (osc1Params.lastNote != osc1Params.note) {
+  //   osc1Portamento.setTime(mappedBlue);
+  //   osc1Portamento.start(osc1Params.noteMIDINumber);
+  // }
+  // osc1.setFreq_Q16n16(osc1Portamento.next());
+
+  // i = colorToScaleNote(mappedBlue);
+  // i = (i + 5) % numNotesInScale;
+  // osc2Params.note = scale_DMixolydian[i];
+  // osc2Params.noteMIDINumber = noteNameToMIDINote(osc2Params.note);
+  // osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
+  // osc2Params.volume = 0;
+  // osc2.setFreq(osc2Params.frequency);
 }
+
+
+ // version that finds closest reference color
+// void generateControls() {
+
+//   // SERIAL_PRINT(mappedRed); SERIAL_TAB; SERIAL_PRINT(mappedGreen); SERIAL_TAB; SERIAL_PRINTLN(mappedBlue);
+//   ReferenceColor closestColor = findClosestColor(mappedRed, mappedGreen, mappedBlue);
+//   SERIAL_PRINTLN(closestColor.name);
+// }
 
 /*
 void generateControls() {
