@@ -774,12 +774,18 @@ void generateControls() {
   osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
   osc0.setFreq(osc0Params.frequency);
   
-  osc1Params.noteMIDINumber = scale_CLydian[(i + 2 ) % numNotesInScale] + octaveShifter;
+  uint8_t j = colorToScaleNote(mappedGreen);
+  // osc1Params.noteMIDINumber = scale_CLydian[(i + 2 ) % numNotesInScale] + octaveShifter;
+  osc1Params.noteMIDINumber = scale_CLydian[j];
   osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
   osc1Params.volume = 60;
   osc1.setFreq(osc1Params.frequency);
 
-  osc2Params.noteMIDINumber = scale_CLydian[(i + 3) % numNotesInScale] - 7;
+  uint8_t k = colorToScaleNote(mappedBlue);
+
+  // osc2Params.noteMIDINumber = scale_CLydian[k] + octaveShifter;
+  osc2Params.noteMIDINumber = scale_CLydian[(i + 3) % numNotesInScale] + octaveShifter;     // pretty good
+  // osc2Params.noteMIDINumber = scale_CLydian[(i + 3) % numNotesInScale] - 7;
   osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
   osc2Params.volume = 120;
   osc2.setFreq(osc2Params.frequency);
