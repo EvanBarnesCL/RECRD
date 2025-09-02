@@ -384,7 +384,7 @@ uint8_t mainLPReso = 50, mainLPCutoff = 100;
 
 
 
-void generateControls();      // right now i just want to wrap all the sound control stuff in a function so I can easily separate it out from the rest of updateControl()
+void ambienceGenerator();      // right now i just want to wrap all the sound control stuff in a function so I can easily separate it out from the rest of updateControl()
 
 
 
@@ -628,7 +628,7 @@ void updateControl() {
   // v2 = mappedRed;
 
 
-  generateControls();
+  ambienceGenerator();
 
 
   
@@ -770,7 +770,7 @@ Chord progression = {D, Am, Em, G};
 
 
 
-void generateControls() {
+void ambienceGenerator() {
   uint8_t i = colorToScaleNote(mappedRed);
   static int8_t arpIndex = 0;
   static uint8_t numNotesLeftInArp = 0;
@@ -849,8 +849,8 @@ void generateControls() {
 
   } else {
     if (!arpStarted) {
-      arpDurationTimer.set(max(250, mappedWhite << 3));
-      arpDurationTimer.start();
+      // arpDurationTimer.set(max(250, mappedWhite << 3));
+      // arpDurationTimer.start();
 
       numNotesLeftInArp = rand(4, 17);
 
@@ -858,6 +858,7 @@ void generateControls() {
       arpNoteTimer.set(min(mappedBlue << 0, 125));
       arpNoteTimer.start();
       arpIndex = rand(numNotesInScale);
+      osc2AmpEnv.setTimes(5, 5, 100, 100);
     }
     if (arpNoteTimer.ready()) {
       osc2Params.noteMIDINumber = scale_CLydian[arpIndex] + (12 * (int8_t)rand(0, 3));
@@ -882,6 +883,7 @@ void generateControls() {
       arpTimeout.set(mappedGreen << 4);
       arpTimeout.start();
       arpOnTimeOut = true;
+      osc2AmpEnv.setTimes(attack, decay, sustain, release);
     }
 
   }
@@ -959,7 +961,7 @@ void generateControls() {
 
 
 //  version that finds closest reference color
-// void generateControls() {
+// void ambienceGenerator() {
 
 //   SERIAL_PRINT(mappedRed); SERIAL_TAB; SERIAL_PRINT(mappedGreen); SERIAL_TAB; SERIAL_PRINT(mappedBlue); SERIAL_TAB; SERIAL_PRINTLN(mappedWhite);
 //   // ReferenceColor closestColor = findClosestColor(mappedRed, mappedGreen, mappedBlue);
@@ -967,7 +969,7 @@ void generateControls() {
 // }
 
 /*
-void generateControls() {
+void ambienceGenerator() {
   // parameter containers for three oscillators
   static uint16_t arpInterval = 0;        // time between arp notes
   bool arpeggiate = false;                // flag that indicates that we should arp
@@ -1054,7 +1056,7 @@ void generateControls() {
 
 
 /*
-void generateControls() {
+void ambienceGenerator() {
   // SERIAL_PRINTLN(arpInterval);
   static uint8_t note0 = 0, note1 = 0, note2 = 0;
   static float f0 = 0.0, f1 = 0.0, f2 = 0.0;
