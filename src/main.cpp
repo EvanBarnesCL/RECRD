@@ -54,6 +54,7 @@
 #include <FastPID.h>                // Fast fixed point math PID implementation used for controlling arm position - might remove
 #include <AutoMap.h>                // A version of map() that is auto-ranging. Used for mapping color values to control signals.
 #include <mozzi_rand.h>             // Faster random number generation
+#include <RollingAverage.h>
 
 /**
  * This is a macro for easily enabling or disabling the Serial monitor print statements. 
@@ -170,7 +171,7 @@ FixedPointColorValues scaledFixedColorData;
 
 bool updateChannels[5] = {false, false, false, false, false}; // Flags to control which channels to update. defaults to all five off.
 
-uint8_t mappedGreen = 0, mappedBlue = 0, mappedRed = 0;   // where color data that has been mapped into control signals will be stored
+uint8_t mappedGreen = 0, mappedBlue = 0, mappedRed = 0, mappedWhite = 0;   // where color data that has been mapped into control signals will be stored
 
 bool updateColorReadings(ColorValues *colorReadings);
 void printColorData();
@@ -190,6 +191,30 @@ constexpr uint8_t NUM_BRIGHTNESS_LEVELS = 5;
 uint8_t LEDBrightnessLevels[NUM_BRIGHTNESS_LEVELS] = {0, 32, 64, 192, 255};
 uint8_t brightnessIterator = 3; // default to brightness level 3 on startup
 
+RollingAverage<uint8_t, 32> avgRed, avgBlue, avgGreen;
+
+
+struct ReferenceColor {
+    const char* name;
+    uint8_t red;
+    uint8_t green; 
+    uint8_t blue;
+};
+
+// Define your reference colors
+const ReferenceColor RED_REF = {"RED", 255, 126, 129};
+const ReferenceColor GREEN_REF = {"GREEN", 167, 255, 174};  // example values
+const ReferenceColor BLUE_REF = {"BLUE", 123, 152, 255};   // example values
+const ReferenceColor CYAN_REF = {"CYAN", 115, 182, 255};
+const ReferenceColor MAGENTA_REF = {"MAGENTA", 255, 154, 228};  // example values
+const ReferenceColor YELLOW_REF = {"YELLOW", 255, 248, 138};   // example values
+
+// Array of reference colors
+const uint8_t numReferenceColors = 6;
+const ReferenceColor referenceColors[numReferenceColors] = {RED_REF, GREEN_REF, BLUE_REF, CYAN_REF, MAGENTA_REF, YELLOW_REF};
+
+
+ReferenceColor findClosestColor(uint8_t redRaw, uint8_t greenRaw, uint8_t blue_raw);
 
 // **********************************************************************************
 // Potentiometers and switch
@@ -270,11 +295,15 @@ uint8_t scaleNumbers_EbPentatonicMinor[numNotesInScale];
 
 
 // D scale mixolydian diatonic chord progression
-Chord D = {"D3", "F#3", "A3", " "}, Am = {"A3", "C4", "E4", " "}, Em = {"E3", "G3", "B3", " "}, G = {"G3", "B3", "D4", " "};
+Chord D = {"A2", "D3", "F#3", " "}, Am = {"A2", "C3", "E3", " "}, Em = {"G3", "B3", "E4", " "}, G = {"G3", "B3", "D4", " "};
+Chord DVar1 = {"D2", "F#2", "A2", " "}, AmVar1 = {"A2", "E3", "C4", " "}, EmVar1 = {"E3", "G3", "B3", " "}, GVar1 = {"G3", "B3", "D4", " "};
 const uint8_t numChordsInProgression = 4;
 Chord progression[numChordsInProgression] = {D, Am, Em, G};
 const uint8_t numNotesInScale = 7;
 const char* scale_DMixolydian[numNotesInScale] = {"D3", "E3", "F#3", "G3", "A3", "B3", "C4"};
+
+Chord progressionVar1[numChordsInProgression] = {DVar1, AmVar1, EmVar1, GVar1};
+
 
 // typedef uint8_t MIDI_NOTE;    
 using MIDI_NOTE = uint8_t;      // just for readability elsewhere, I'm creating an alias called MIDI_NOTE that is just uint8_t datatype. 
@@ -306,7 +335,7 @@ const char* MIDINoteToNoteName(uint8_t note);     // convert MIDI note to note n
 
 
 uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, uint8_t manualIndex, int8_t offset, uint8_t arpMode, uint8_t arpSpread);
-
+/*
 EventDelay arpIntervalTimer, osc1OffsetTimer, osc2OffsetTimer;
 bool arpIntervalTimerStarted = false;
 uint16_t arpInterval = 125, osc1OffsetInterval = 125, osc2OffsetInterval = 125;
@@ -320,7 +349,9 @@ uint8_t noteOffsetInterval = 125;
 EventDelay noteOffset2Timer;
 bool noteOffset2TimerStarted = false, useNoteOffset2 = true;
 uint8_t noteOffset2Interval = 125;
+*/
 
+EventDelay chordTimer, arpDurationTimer, arpNoteTimer;
 
 
 
@@ -468,9 +499,10 @@ void updateControl() {
   // The reason these are static variables inside updateControl() instead of being global is that I wanted to use the RGBCIR.getResolution() function
   // to be able to set the size of the mapping, rather than hardcoding the value. That way the maps get dynamically resized based on the chosen 
   // resolution of the sensor. 
-  static AutoMap autoGreenToVolume(0, RGBCIR.getResolution(), 0, 255);
-  static AutoMap autoBlueToVolume(0, RGBCIR.getResolution(), 0, 255);
-  static AutoMap autoRedToVolume(0, RGBCIR.getResolution(), 0, 255);
+  static AutoMap autoGreenToUINT8_T(0, RGBCIR.getResolution(), 0, 255);
+  static AutoMap autoBlueToUINT8_T(0, RGBCIR.getResolution(), 0, 255);
+  static AutoMap autoRedToUINT8_T(0, RGBCIR.getResolution(), 0, 255);
+  static AutoMap autoWhiteToUINT8_T(0, RGBCIR.getResolution(), 0 , 255);
 
   // check to see if buttons are pressed. returns 0, 1, 2, 255
   // 0 = B1, 1 = B2, 2 = B3, 255 = no press
@@ -549,9 +581,9 @@ void updateControl() {
 
 
   // AutoMap instances that handle the color data mapping to control signals
-  mappedGreen = autoGreenToVolume(scaledFixedColorData.greenFixed.asInt());
-  mappedBlue = autoBlueToVolume(scaledFixedColorData.blueFixed.asInt());
-  mappedRed = autoRedToVolume(scaledFixedColorData.redFixed.asInt());
+  mappedGreen = autoGreenToUINT8_T(scaledFixedColorData.greenFixed.asInt());
+  mappedBlue = autoBlueToUINT8_T(scaledFixedColorData.blueFixed.asInt());
+  mappedRed = autoRedToUINT8_T(scaledFixedColorData.redFixed.asInt());
 
   // oscil wash example sketch stuff
   // v0 = mappedGreen;
@@ -666,7 +698,9 @@ Chord D = {"D3", "F#3", "A3", " "}, Am = {"A3", "C4", "E4", " "}, Em = {"E3", "G
 Chord progression = {D, Am, Em, G};
 
 
- * 
+ * Just listening to the earliest version of this that maps Green to the probability of moving to the next chord, I think
+ * I should also set some chord progression variations. That way another color channel can select the probability of moving
+ * from the main progression into one of the variations. Just right now the 4 chords get boring. 
  * 
  * General algorithm:
  *  - define the chords, the scale, and the chord progression as arrays
@@ -698,39 +732,99 @@ Chord progression = {D, Am, Em, G};
  * 
  */
 
+
+void generateControls() {
+
+  // SERIAL_PRINT(mappedRed); SERIAL_TAB; SERIAL_PRINT(mappedGreen); SERIAL_TAB; SERIAL_PRINTLN(mappedBlue);
+  ReferenceColor closestColor = findClosestColor(mappedRed, mappedGreen, mappedBlue);
+  SERIAL_PRINTLN(closestColor.name);
+}
+
+/*
 void generateControls() {
   // parameter containers for three oscillators
   static uint16_t arpInterval = 0;        // time between arp notes
   bool arpeggiate = false;                // flag that indicates that we should arp
-  bool arpInProgress = false;
-  static Chord currentChord = progression[0], lastChord = currentChord;
+  static bool arpInProgress = false, initialize = true, arpNoteStarted = false;
+  static Chord currentChord = progressionVar1[0], lastChord = currentChord;
+  static uint8_t chordIterator = 0, arpIterator = 0;
+  
+  if (initialize) {
+    chordTimer.set(500);
+    chordTimer.start();
+    initialize = false;
+  }
+  
+  if (chordTimer.ready()) {
+    uint8_t r = rand(256);
+    bool nextChord = (r < mappedGreen) ? true : false; // generate a random number, and if it's smaller than mappedGreen, move to the next chord
+    if (nextChord) {
+      chordIterator = (chordIterator + 1) % numChordsInProgression;
+    }
+    SERIAL_PRINT(r); SERIAL_TAB; SERIAL_PRINT(mappedGreen); SERIAL_TAB; SERIAL_PRINT(nextChord); SERIAL_TAB; SERIAL_PRINT(chordIterator);
+    
+    // chordIterator = (rand(256) < mappedGreen) ? chordIterator++ : chordIterator;
+    // chordIterator %= numChordsInProgression;
+    // currentChord = progression[mappedGreen >> 6];    // should shift this down from 0-255 to 0-3
+    currentChord = progressionVar1[chordIterator];
+    osc0Params.note = getNoteFromArpeggio(currentChord.notes, 4, 0);
+    osc0Params.noteMIDINumber = noteNameToMIDINote(osc0Params.note);
+    osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
+    osc0.setFreq(osc0Params.frequency);
+    osc0Params.volume = 200;
+    // SERIAL_PRINT(osc0Params.noteMIDINumber);
+    // SERIAL_TAB;
+    
+    osc1Params.noteMIDINumber = noteNameToMIDINote(osc1Params.note);
+    osc1Params.note = getNoteFromArpeggio(currentChord.notes, 4, 1);
+    osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
+    osc1.setFreq(osc1Params.frequency);
+    osc1Params.volume = 200;
+    // SERIAL_PRINT(osc1Params.noteMIDINumber);
+    // SERIAL_TAB;
 
-  currentChord = progression[mappedGreen >> 6];    // should shift this down from 0-255 to 0-3
-  // currentChord = progression[3];
-  osc0Params.note = getNoteFromArpeggio(currentChord.notes, 4, 0);
-  osc0Params.noteMIDINumber = noteNameToMIDINote(osc0Params.note);
-  osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
-  osc0.setFreq(osc0Params.frequency);
-  osc0Params.volume = 200;
-  SERIAL_PRINT(osc0Params.noteMIDINumber);
-  SERIAL_TAB;
-
-  osc1Params.noteMIDINumber = noteNameToMIDINote(osc1Params.note);
-  osc1Params.note = getNoteFromArpeggio(currentChord.notes, 4, 1);
-  osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
-  osc1.setFreq(osc1Params.frequency);
-  osc1Params.volume = 200;
-  SERIAL_PRINT(osc1Params.noteMIDINumber);
-  SERIAL_TAB;
-
-  osc2Params.note = getNoteFromArpeggio(currentChord.notes, 4, 2);
-  osc2Params.noteMIDINumber = noteNameToMIDINote(osc2Params.note);
-  osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
-  osc2.setFreq(osc2Params.frequency);
-  osc2Params.volume = 200;
-  SERIAL_PRINTLN(osc2Params.noteMIDINumber);
+    arpeggiate = (rand(256) < mappedBlue) ? true : false; // if we cross the threshold, arpeggiate next time around
+    if (!arpeggiate) {  
+      osc2Params.note = getNoteFromArpeggio(currentChord.notes, 4, 2);
+      osc2Params.noteMIDINumber = noteNameToMIDINote(osc2Params.note);
+      osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
+      osc2.setFreq(osc2Params.frequency);
+      osc2Params.volume = 200;
+      // SERIAL_PRINTLN(osc2Params.noteMIDINumber);
+      chordTimer.start();
+    } else {
+      if (!arpInProgress) {
+        arpInProgress = true;
+        arpDurationTimer.set(4000);
+        arpDurationTimer.start();
+      } else {
+        if (arpDurationTimer.ready()) {
+          arpInProgress = false;
+          arpeggiate = false;       // reset to wait for new threshold
+        } else {
+          if (!arpNoteStarted) {
+            SERIAL_PRINTLN("hello");
+            arpNoteStarted = true;
+            arpNoteTimer.set(250);
+            arpNoteTimer.start();
+            osc2Params.note = getNoteFromArpeggio(scale_DMixolydian, numNotesInScale, arpIterator);
+            arpIterator = (arpIterator + 1) % numNotesInScale;
+            osc2Params.noteMIDINumber = noteNameToMIDINote(osc2Params.note);
+            osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
+            osc2Params.volume = 150;
+            osc2.setFreq(osc2Params.frequency);
+          } else {
+            if (arpNoteTimer.ready()) arpNoteStarted = false;
+          }
+        }
+      }
+    }
+    SERIAL_TAB; SERIAL_PRINT(arpeggiate); SERIAL_TAB; SERIAL_PRINTLN(arpIterator);
+  }
   
 }
+
+*/
 
 
 /*
@@ -1520,4 +1614,25 @@ void scaleColorDataFixedPoint(ColorValues *rawData, FixedPointColorValues *scale
   scaledVals->blueFixed = UFix<16, 0>(((uint32_t)rawData->blue * 157286UL) >> 16);
   scaledVals->clearFixed = UFix<16, 0>(rawData->clear);
   scaledVals->IRFixed = UFix<16, 0>(rawData->IR << 3);
+}
+
+
+
+
+ReferenceColor findClosestColor(uint8_t redRaw, uint8_t greenRaw, uint8_t blue_raw) {
+    uint32_t minDistance = UINT32_MAX;
+    ReferenceColor closestColor = referenceColors[0];
+    
+    for (int i = 0; i < numReferenceColors; i++) {
+        uint32_t sq_dst = (redRaw - referenceColors[i].red) * (redRaw - referenceColors[i].red) +
+                         (greenRaw - referenceColors[i].green) * (greenRaw - referenceColors[i].green) +
+                         (blue_raw - referenceColors[i].blue) * (blue_raw - referenceColors[i].blue);
+        
+        if (sq_dst < minDistance) {
+            minDistance = sq_dst;
+            closestColor = referenceColors[i];
+        }
+    }
+    
+    return closestColor;
 }
