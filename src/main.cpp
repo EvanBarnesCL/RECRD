@@ -315,7 +315,8 @@ uint8_t scaleNumbers_EbPentatonicMinor[numNotesInScale];
 using MIDI_NOTE = uint8_t;      // just for readability elsewhere, I'm creating an alias called MIDI_NOTE that is just uint8_t datatype. 
 
 
-
+// C#maj Pentatonic
+const MIDI_NOTE scale_CPentatonicMajor[5] = {48, 50, 52, 55, 57};
 
 
 // C harmonic major scale
@@ -334,7 +335,6 @@ constexpr uint8_t numChordsInProgression = 7;
 Chord progression[numChordsInProgression] = {Cmaj_I, Ddim_ii, Emin_iii,Fmin_iv, Gmaj_V, GSharpAug_VI, Bdim_vii};
 
 
-
 // Eb pentatonic minor scale
 const char* scale_EbPentatonicMinor[5] = {"D#3", "F#3", "G#3", "A#3", "C#4"};
 MIDI_NOTE scale_EbPentatonicMinorMIDI[5] = {51, 54, 56, 58, 61};
@@ -348,8 +348,12 @@ const MIDI_NOTE scale_CLydianMIDI[7] = {root_CLydianScale, root_CLydianScale + 2
 struct scaleStorage {
   const uint8_t NUM_SCALES = 3;
   uint8_t scaleSelector = 0;
-  const MIDI_NOTE* scaleArray[3] = {scale_EbPentatonicMinorMIDI, scale_CLydianMIDI, scale_CHarmMajorMIDI};
-  const uint8_t numNotesInSelectedScale[3] = {5, 7, 7};
+  const MIDI_NOTE* scaleArray[3] = {scale_EbPentatonicMinorMIDI, scale_CLydianMIDI, scale_CPentatonicMajor};
+  const uint8_t numNotesInSelectedScale[3] = {        // this calculates number of notes in each scale
+    sizeof(scale_EbPentatonicMinorMIDI) / sizeof(scale_EbPentatonicMinorMIDI[0]),
+    sizeof(scale_CLydianMIDI) / sizeof(scale_CLydianMIDI[0]),
+    sizeof(scale_CPentatonicMajor) / sizeof(scale_CPentatonicMajor[0])
+  };
 };
 
 scaleStorage scaleContainer;
@@ -601,7 +605,7 @@ void updateControl() {
         SERIAL_PRINT("scale: ");
         SERIAL_PRINTLN(scaleContainer.scaleSelector);
         break;
-      case 2:     // right button, either osc type changer or possibly switch to chord mode
+      case 2:     // right button, all pizzicato I think, instead of sustained notes
         break;
         default:
         break;     
