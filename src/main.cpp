@@ -435,6 +435,11 @@ void ambienceGenerator();      // right now i just want to wrap all the sound co
 void toneBeatsGenerator();
 
 
+bool enableButton2Mode = false, previousEnableButton2Mode = false;
+uint8_t lastButtonMode = 0, currentButtonMode = 0;
+
+EventDelay osc0ButtonMode2NoteTimer, osc1ButtonMode2NoteTimer, osc2ButtonMode2NoteTimer;
+
 // **********************************************************************************
 // Setup
 // **********************************************************************************
@@ -594,18 +599,24 @@ void updateControl() {
   if (buttonTimer.ready()) {
     switch (buttonPressed) {
       case 0:     // left button, LED brightness levels
+        // enableButton2Mode = false;
         brightnessIterator = (++brightnessIterator) % NUM_BRIGHTNESS_LEVELS;
         analogWrite(LED_PIN, LEDBrightnessLevels[brightnessIterator]);
+        // currentButtonMode = 0;
         break;
       case 1:     // middle button, scale selector
+        // enableButton2Mode = false;
         scaleContainer.scaleSelector = (scaleContainer.scaleSelector + 1) % scaleContainer.NUM_SCALES;
         currentScale = scaleContainer.scaleArray[scaleContainer.scaleSelector];
         numNotesInScale = scaleContainer.numNotesInSelectedScale[scaleContainer.scaleSelector];
         SERIAL_TABS(2);
         SERIAL_PRINT("scale: ");
         SERIAL_PRINTLN(scaleContainer.scaleSelector);
+        // currentButtonMode = 1;
         break;
       case 2:     // right button, all pizzicato I think, instead of sustained notes
+        enableButton2Mode = !enableButton2Mode;
+        // currentButtonMode = 2;
         break;
         default:
         break;     
@@ -695,7 +706,8 @@ void updateControl() {
   ambienceGenerator();
   // toneBeatsGenerator();
 
-
+  previousEnableButton2Mode = enableButton2Mode;
+  // lastButtonMode = currentButtonMode;   // set this flag so we can detect transitions
   
   // v0 = 100;
   // v1 = 0;
@@ -868,6 +880,16 @@ void ambienceGenerator() {
   int8_t octaveShifter = (int8_t)(mappedWhite >> 6);
   static bool arpeggiate = false, arpStarted = false, arpOnTimeOut = true;
   
+  
+  // button mode 2 stuff
+  uint8_t newOs0Note = 0, newOsc1Note = 0, newOsc2Note = 0;
+  static uint8_t baseNoteInterval = 64;
+  // event delay for each osc
+  // thresholds for new notes and selected scales
+  SERIAL_PRINTLN(currentButtonMode);
+
+  if (!enableButton2Mode && previousEnableButton2Mode) initialize = true;  // transition out of button mode 2 requires resetting ADSRs
+
   if (initialize) {
     // scaleContainer.scaleSelector = 2;
     currentScale = scaleContainer.scaleArray[scaleContainer.scaleSelector];
@@ -881,132 +903,216 @@ void ambienceGenerator() {
     initialize = false;
   }
   
+  if (enableButton2Mode) {
   
-  octaveShifter = max(-1, octaveShifter - 2); // should set octaveShifter to -1, 0, or 1 octaves added
-  // SERIAL_PRINTLN(octaveShifter);
-  // octaveShifter *= 12;  //make that actual midi note values by multiplying by 12 to get movement
-  
-  if (arpTimeout.ready()) {   // it's been long enough to allow an arpeggio again
-    arpOnTimeOut = false;
-  }
-  
-  if (octaveShifter > 0 && !arpOnTimeOut && !arpStarted) {   // arp is allowed again and triggered by enough white light
-    arpeggiate = (rand(256) <= mappedWhite) ? true : false;
-  }
-  
-  uint8_t i;
-  if (numNotesInScale == 7) {
-    i = colorToScaleNote7(mappedGreen);
-  } else {
-    i = colorToScaleNote5(mappedGreen);
-  }
-
-  osc0Params.noteMIDINumber = currentScale[i];
-  if (osc0Params.lastNoteMIDINumber != osc0Params.noteMIDINumber) {
-    osc0AmpEnv.noteOn();
-    osc0Params.lastNoteMIDINumber = osc0Params.noteMIDINumber;
-  }
-  
-  osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
-  osc0.setFreq((osc0Params.frequency));
-  osc0AmpEnv.update();
-  osc0Params.volume = osc0AmpEnv.next();
-  
-  
-  uint8_t j;
-  // osc1Params.noteMIDINumber = scale_CLydianMIDI[(i + 2 ) % numNotesInScale] + octaveShifter;
-  if (numNotesInScale == 7) {
-    j = colorToScaleNote7(mappedBlue);
-  } else {
-    j = colorToScaleNote5(mappedBlue);
-  }
-  switch (scaleContainer.scaleSelector) {
-    case 0:
-      osc1Params.noteMIDINumber = currentScale[(j + 4) % numNotesInScale] - 12;
-      break;
-    case 1: 
-      osc1Params.noteMIDINumber = currentScale[(i + 2) % numNotesInScale] + octaveShifter * 12;
-      break;
-    case 2:
-      osc1Params.noteMIDINumber = currentScale[j] - 12;
-      break;
-    default:
-      break;
-  }
-  
-  if (osc1Params.lastNoteMIDINumber != osc1Params.noteMIDINumber) {
-    osc1AmpEnv.noteOn();
-    osc1Params.lastNoteMIDINumber = osc1Params.noteMIDINumber;
-  }
-  
-  osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
-  osc1.setFreq(osc1Params.frequency);
-  osc1AmpEnv.update();
-  osc1Params.volume = osc1AmpEnv.next();
+    if (!previousEnableButton2Mode) {    // new isntance of button mode 2
+      // set all the ADSRs to be short and plucky
+      // build random chords by selecting one note from scale for each oscillator
+      // set up event delay for each note to be repeated, timing determined by color channel
+      osc0AmpEnv.setTimes(5, 50, 100, 200);
+      osc1AmpEnv.setTimes(5, 50, 100, 200);
+      osc1AmpEnv.setADLevels(60, 40);
+      osc2AmpEnv.setTimes(5, 50, 100, 200);
 
 
-  if (!arpeggiate) {
-        
-    // osc2Params.noteMIDINumber = scale_CLydianMIDI[k] + octaveShifter;
-    osc2Params.noteMIDINumber = currentScale[(i + 3) % numNotesInScale] + (octaveShifter * 12);     // pretty good
-    // osc2Params.noteMIDINumber = scale_CLydianMIDI[(i + 3) % numNotesInScale] - 7;
-    if (osc2Params.lastNoteMIDINumber != osc2Params.noteMIDINumber) {
-      osc2AmpEnv.noteOn();
-      osc2Params.lastNoteMIDINumber = osc2Params.noteMIDINumber;
+      osc0ButtonMode2NoteTimer.set(max(1, mappedGreen >> 4) * baseNoteInterval);    // this will make all the notes play in interval steps of 32ms. quantize
+      osc0ButtonMode2NoteTimer.start();
+      osc1ButtonMode2NoteTimer.set(max(1, mappedGreen >> 4) * baseNoteInterval * 2);
+      osc1ButtonMode2NoteTimer.start();
+      osc2ButtonMode2NoteTimer.set(max(1, mappedGreen >> 4) * baseNoteInterval);
+      osc2ButtonMode2NoteTimer.start();
+    }
+
+    baseNoteInterval = (mappedWhite >> 5) * 16;
+
+    // check the event delay to see if the note for each voice is finished playing, then set up new notes if threshold met
+    if (osc0ButtonMode2NoteTimer.ready()) {
+      if (rand(256) < mappedRed) {
+        if (numNotesInScale == 7) {
+          osc0Params.noteMIDINumber = currentScale[colorToScaleNote7(mappedGreen)] + ((int8_t)rand(-1, 2) * 12);
+        } else {
+          osc0Params.noteMIDINumber = currentScale[colorToScaleNote5(mappedGreen)] + ((int8_t)rand(-1, 2) * 12);
+        } 
+      }
+      osc0AmpEnv.noteOn();
+      osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
+      osc0.setFreq(osc0Params.frequency);
+      osc0ButtonMode2NoteTimer.set(max(1, mappedGreen >> 4) * baseNoteInterval);
+      osc0ButtonMode2NoteTimer.start();
     }
     
-    osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
-    osc2.setFreq(osc2Params.frequency);
+    if (osc1ButtonMode2NoteTimer.ready()) {
+      if (rand(256) < mappedGreen) {
+        if (numNotesInScale == 7) {
+          osc1Params.noteMIDINumber = currentScale[colorToScaleNote7(mappedBlue)] + ((int8_t)rand(-1, 2) * 12);
+        } else {
+          osc1Params.noteMIDINumber = currentScale[colorToScaleNote5(mappedBlue)] + ((int8_t)rand(-1, 2) * 12);
+        } 
+      }
+      osc1AmpEnv.noteOn();
+      osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
+      osc1.setFreq(osc1Params.frequency);
+      osc1ButtonMode2NoteTimer.set(max(1, mappedBlue >> 4) * baseNoteInterval * 2);
+      osc1ButtonMode2NoteTimer.start();
+    }
+
+    if (osc2ButtonMode2NoteTimer.ready()) {
+      if (rand(256) < mappedBlue) {
+        if (numNotesInScale == 7) {
+          osc2Params.noteMIDINumber = currentScale[colorToScaleNote7(mappedRed)] + ((int8_t)rand(-1, 2) * 12);
+        } else {
+          osc2Params.noteMIDINumber = currentScale[colorToScaleNote5(mappedRed)] + ((int8_t)rand(-1, 2) * 12);
+        } 
+      }
+      osc2AmpEnv.noteOn();
+      osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
+      osc2.setFreq(osc2Params.frequency);
+      osc2ButtonMode2NoteTimer.set(max(1, mappedRed >> 4) * baseNoteInterval);
+      osc2ButtonMode2NoteTimer.start();
+    }
+    
+    osc0AmpEnv.update();
+    osc1AmpEnv.update();
     osc2AmpEnv.update();
+    osc0Params.volume = osc0AmpEnv.next();
+    osc1Params.volume = osc1AmpEnv.next();
     osc2Params.volume = osc2AmpEnv.next();
 
+
+
+
+
+    // osc1Params.volume = osc2Params.volume = 0;
+
   } else {
-    if (!arpStarted) {
-      // arpDurationTimer.set(max(250, mappedWhite << 3));
-      // arpDurationTimer.start();
 
-      numNotesLeftInArp = rand(4, 17);
-
-      arpStarted = true;
-      arpNoteTimer.set(min(mappedBlue, 192));
-      arpNoteTimer.start();
-      arpIndex = rand(numNotesInScale);
-      osc2AmpEnv.setTimes(5, 5, 100, 100);
-    }
-    if (arpNoteTimer.ready()) {
-      osc2Params.noteMIDINumber = currentScale[arpIndex] + (12 * (int8_t)rand(-1, 3));
-      osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
-      osc2Params.volume = 120;
-
-      osc2Portamento.setTime(osc2PortTime);
-      if (!USE_PORTAMENTO) osc2.setFreq(osc2Params.frequency);
-      
-      int8_t arpShift = rand(-5, 6);
-      arpIndex += arpShift;   // move to next note in sequence
-      // if (arpIndex < 0) {
-        //   arpIndex += numNotesInScale;
-        // } else if (arpIndex > numNotesInScale - 1) {
-          //   arpIndex -= numNotesInScale;
-          // }
-          arpIndex = (arpIndex < numNotesInScale && arpIndex >= 0) ? arpIndex : ((arpIndex < 0) ? arpIndex += numNotesInScale : arpIndex -= numNotesInScale);
-          arpNoteTimer.start();
-          numNotesLeftInArp -= 1;    // we have one fewer notes left in the arp
-        }
-        
-    if (USE_PORTAMENTO) {    
-      osc2Portamento.start(osc2Params.noteMIDINumber);
-      osc2.setFreq_Q16n16(osc2Portamento.next());
-    }
-
-    if (numNotesLeftInArp == 0) {
-      arpeggiate = false;
-      arpStarted = false;
-      arpTimeout.set(mappedGreen << 4);
-      arpTimeout.start();
-      arpOnTimeOut = true;
-      osc2AmpEnv.setTimes(attack, decay, sustain, release);
+    octaveShifter = max(-1, octaveShifter - 2); // should set octaveShifter to -1, 0, or 1 octaves added
+    // SERIAL_PRINTLN(octaveShifter);
+    // octaveShifter *= 12;  //make that actual midi note values by multiplying by 12 to get movement
+    
+    if (arpTimeout.ready()) {   // it's been long enough to allow an arpeggio again
+      arpOnTimeOut = false;
     }
     
+    if (octaveShifter > 0 && !arpOnTimeOut && !arpStarted) {   // arp is allowed again and triggered by enough white light
+      arpeggiate = (rand(256) <= mappedWhite) ? true : false;
+    }
+    
+    uint8_t i;
+    if (numNotesInScale == 7) {
+      i = colorToScaleNote7(mappedGreen);
+    } else {
+      i = colorToScaleNote5(mappedGreen);
+    }
+
+    osc0Params.noteMIDINumber = currentScale[i];
+    if (osc0Params.lastNoteMIDINumber != osc0Params.noteMIDINumber) {
+      osc0AmpEnv.noteOn();
+      osc0Params.lastNoteMIDINumber = osc0Params.noteMIDINumber;
+    }
+    
+    osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
+    osc0.setFreq((osc0Params.frequency));
+    osc0AmpEnv.update();
+    osc0Params.volume = osc0AmpEnv.next();
+    
+    
+    uint8_t j;
+    // osc1Params.noteMIDINumber = scale_CLydianMIDI[(i + 2 ) % numNotesInScale] + octaveShifter;
+    if (numNotesInScale == 7) {
+      j = colorToScaleNote7(mappedBlue);
+    } else {
+      j = colorToScaleNote5(mappedBlue);
+    }
+    switch (scaleContainer.scaleSelector) {
+      case 0:
+        osc1Params.noteMIDINumber = currentScale[(j + 4) % numNotesInScale] - 12;
+        break;
+      case 1: 
+        osc1Params.noteMIDINumber = currentScale[(i + 2) % numNotesInScale] + octaveShifter * 12;
+        break;
+      case 2:
+        osc1Params.noteMIDINumber = currentScale[j] - 12;
+        break;
+      default:
+        break;
+    }
+    
+    if (osc1Params.lastNoteMIDINumber != osc1Params.noteMIDINumber) {
+      osc1AmpEnv.noteOn();
+      osc1Params.lastNoteMIDINumber = osc1Params.noteMIDINumber;
+    }
+    
+    osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
+    osc1.setFreq(osc1Params.frequency);
+    osc1AmpEnv.update();
+    osc1Params.volume = osc1AmpEnv.next();
+
+
+    if (!arpeggiate) {
+          
+      // osc2Params.noteMIDINumber = scale_CLydianMIDI[k] + octaveShifter;
+      osc2Params.noteMIDINumber = currentScale[(i + 3) % numNotesInScale] + (octaveShifter * 12);     // pretty good
+      // osc2Params.noteMIDINumber = scale_CLydianMIDI[(i + 3) % numNotesInScale] - 7;
+      if (osc2Params.lastNoteMIDINumber != osc2Params.noteMIDINumber) {
+        osc2AmpEnv.noteOn();
+        osc2Params.lastNoteMIDINumber = osc2Params.noteMIDINumber;
+      }
+      
+      osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
+      osc2.setFreq(osc2Params.frequency);
+      osc2AmpEnv.update();
+      osc2Params.volume = osc2AmpEnv.next();
+
+    } else {
+      if (!arpStarted) {
+        // arpDurationTimer.set(max(250, mappedWhite << 3));
+        // arpDurationTimer.start();
+
+        numNotesLeftInArp = rand(4, 17);
+
+        arpStarted = true;
+        arpNoteTimer.set(min(mappedBlue, 192));
+        arpNoteTimer.start();
+        arpIndex = rand(numNotesInScale);
+        osc2AmpEnv.setTimes(5, 5, 100, 100);
+      }
+      if (arpNoteTimer.ready()) {
+        osc2Params.noteMIDINumber = currentScale[arpIndex] + (12 * (int8_t)rand(-1, 3));
+        osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
+        osc2Params.volume = 120;
+
+        osc2Portamento.setTime(osc2PortTime);
+        if (!USE_PORTAMENTO) osc2.setFreq(osc2Params.frequency);
+        
+        int8_t arpShift = rand(-5, 6);
+        arpIndex += arpShift;   // move to next note in sequence
+        // if (arpIndex < 0) {
+          //   arpIndex += numNotesInScale;
+          // } else if (arpIndex > numNotesInScale - 1) {
+            //   arpIndex -= numNotesInScale;
+            // }
+            arpIndex = (arpIndex < numNotesInScale && arpIndex >= 0) ? arpIndex : ((arpIndex < 0) ? arpIndex += numNotesInScale : arpIndex -= numNotesInScale);
+            arpNoteTimer.start();
+            numNotesLeftInArp -= 1;    // we have one fewer notes left in the arp
+          }
+          
+      if (USE_PORTAMENTO) {    
+        osc2Portamento.start(osc2Params.noteMIDINumber);
+        osc2.setFreq_Q16n16(osc2Portamento.next());
+      }
+
+      if (numNotesLeftInArp == 0) {
+        arpeggiate = false;
+        arpStarted = false;
+        arpTimeout.set(mappedGreen << 4);
+        arpTimeout.start();
+        arpOnTimeOut = true;
+        osc2AmpEnv.setTimes(attack, decay, sustain, release);
+      }
+      
+    }
+
   }
   // osc0Params.volume = 0;
   // osc1Params.volume = 60;
