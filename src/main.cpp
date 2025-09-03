@@ -42,7 +42,7 @@
 #include <tables/saw2048_int8.h>    // Saw wavetable
 #include <tables/triangle_dist_cubed_2048_int8.h>
 #include <tables/triangle_valve_2_2048_int8.h>
-#include <tables/triangle_warm8192_int8.h>
+// #include <tables/triangle_warm8192_int8.h>
 #include <IntMap.h>                 // A more efficient replacement for map()
 #include <EventDelay.h>             // Mozzi library for performing actions at specific time intervals without delay() or millis()
 #include <mozzi_utils.h>
@@ -51,12 +51,12 @@
 #include <CLS16D24.h>               // Color sensor
 #include <AS5600.h>                 // Magnetic encoders for the arm and table positions
 #include <DCfilter.h>               // DC filter used to detect changes in a signal (used for recognizing when arm and table stop moving)
-#include <FastPID.h>                // Fast fixed point math PID implementation used for controlling arm position - might remove
+// #include <FastPID.h>                // Fast fixed point math PID implementation used for controlling arm position - might remove
 #include <AutoMap.h>                // A version of map() that is auto-ranging. Used for mapping color values to control signals.
 #include <mozzi_rand.h>             // Faster random number generation
 #include <Portamento.h>
 #include <ADSR.h> 
-
+// #include <ReverbTank.h>
 
 /**
  * This is a macro for easily enabling or disabling the Serial monitor print statements. 
@@ -122,6 +122,8 @@ AS5600 armEncoder;
 
 int8_t currentArmPosition = 0; // current arm position in millimeters from center of table
 int16_t currentArmAngle = 0;
+int32_t currentTableAngle = 0, lastTableAngle = 0;
+uint16_t calculatedTableRotationPeriod = 0;    // for calculated table RPM. This will be how long it takes in milliseconds to complete 1 revolution at current speed
 
 DCfilter armDCFilter(0.95);          // DC filter detects changes in arm position (settles to 0 if the arm is not moving)
 DCfilter tableDCFilter(0.6);        // DC filter for table movement
@@ -243,6 +245,7 @@ Oscil<SAW2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc1(SAW2048_DATA);
 Oscil<TRIANGLE_VALVE_2_2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc2(TRIANGLE_VALVE_2_2048_DATA);
 // Oscil<TRIANGLE_WARM8192_NUM_CELLS, TRIANGLE_WARM8192_SAMPLERATE> osc1(TRIANGLE_WARM8192_DATA);
 
+
 // audio volumes updated each control interrupt and reused in audio till next control
 // well this is wild. The original example sketch I built this from used char as the datatype, which is not something that
 // should ever be used except for storing characters of text. A lot of older Arduino sketches use char when a more appropriate
@@ -256,7 +259,9 @@ Oscil<TRIANGLE_VALVE_2_2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc2(TRIANGLE_VALVE_2_2
 // of that is that the volume is much louder, but it also starts making noise immediately. It's unpleasant sounding until the
 // AutoMaps kick in and start ranging things correctly. I could fix this by adding some kind of volume fade that runs when the
 // program boots up, but I like that with int8_t, it's adaptive to the actual color data it receives and isn't time based.
-int8_t v0, v1, v2;
+
+// DEPRECATED. Using OscXParams structs that contain volume info now
+// int8_t v0, v1, v2;
 
 // **********************************************************************************
 // Music stuff
@@ -306,11 +311,17 @@ uint8_t scaleNumbers_EbPentatonicMinor[numNotesInScale];
 // Chord progressionVar1[numChordsInProgression] = {DVar1, AmVar1, EmVar1, GVar1};
 
 
+// typedef uint8_t MIDI_NOTE;    
+using MIDI_NOTE = uint8_t;      // just for readability elsewhere, I'm creating an alias called MIDI_NOTE that is just uint8_t datatype. 
+
+
+
 
 
 // C harmonic major scale
-constexpr uint8_t numNotesInScale = 7;
-const char* scale_CHarmonicMajor[] = {"C2", "D2", "E2", "F2", "G2" "G#2", "B2"};
+const char* scale_CHarmonicMajor[] = {"C3", "D3", "E3", "F3", "G3", "G#3", "B3"};
+const MIDI_NOTE scale_CHarmMajorMIDI[7] = {48, 50, 52, 53, 55, 56, 59};
+
 Chord Cmaj_I = {scale_CHarmonicMajor[0], scale_CHarmonicMajor[2], scale_CHarmonicMajor[4]};
 Chord Ddim_ii = {scale_CHarmonicMajor[1], scale_CHarmonicMajor[3], scale_CHarmonicMajor[5]};
 Chord Emin_iii = {scale_CHarmonicMajor[2], scale_CHarmonicMajor[4], scale_CHarmonicMajor[6]};
@@ -323,13 +334,31 @@ constexpr uint8_t numChordsInProgression = 7;
 Chord progression[numChordsInProgression] = {Cmaj_I, Ddim_ii, Emin_iii,Fmin_iv, Gmaj_V, GSharpAug_VI, Bdim_vii};
 
 
-// typedef uint8_t MIDI_NOTE;    
-using MIDI_NOTE = uint8_t;      // just for readability elsewhere, I'm creating an alias called MIDI_NOTE that is just uint8_t datatype. 
 
+// Eb pentatonic minor scale
+const char* scale_EbPentatonicMinor[5] = {"D#3", "F#3", "G#3", "A#3", "C#4"};
+MIDI_NOTE scale_EbPentatonicMinorMIDI[5] = {51, 54, 56, 58, 61};
 
-
+// C Lydian scale
 constexpr MIDI_NOTE root_CLydianScale = 48;     // MIDI note number for C3
-constexpr MIDI_NOTE scale_CLydian[numNotesInScale] = {root_CLydianScale, root_CLydianScale + 2, root_CLydianScale + 4, root_CLydianScale + 6, root_CLydianScale + 7, root_CLydianScale + 9, root_CLydianScale + 11};
+const MIDI_NOTE scale_CLydianMIDI[7] = {root_CLydianScale, root_CLydianScale + 2, root_CLydianScale + 4, root_CLydianScale + 6, root_CLydianScale + 7, root_CLydianScale + 9, root_CLydianScale + 11};
+
+
+// array for storing the scales and another array for storing the associated note numbers
+struct scaleStorage {
+  const uint8_t NUM_SCALES = 3;
+  uint8_t scaleSelector = 0;
+  const MIDI_NOTE* scaleArray[3] = {scale_EbPentatonicMinorMIDI, scale_CLydianMIDI, scale_CHarmMajorMIDI};
+  const uint8_t numNotesInSelectedScale[3] = {5, 7, 7};
+};
+
+scaleStorage scaleContainer;
+
+const MIDI_NOTE* currentScale = scaleContainer.scaleArray[scaleContainer.scaleSelector];
+uint8_t numNotesInScale = scaleContainer.numNotesInSelectedScale[scaleContainer.scaleSelector];
+
+
+
 
 
 // struct for storing parameters for each oscillator
@@ -377,16 +406,29 @@ uint8_t noteOffset2Interval = 125;
 */
 
 EventDelay chordTimer, arpDurationTimer, arpNoteTimer, arpTimeout;
-const IntMap colorToScaleNote(0, 255, 0, numNotesInScale - 1);
 
+/**
+ * I just figured out that IntMap doesn't work as documented. documentation says that it's this:
+ * const IntMap theMap(fromLow, fromHigh, toLow, toHigh), and that toLow and toHigh are the minimum and maximum numbers that will be ouput.
+ * However, the actually maximum output is toHigh - 1. So if you want to map [0,100] (inclusive) onto [0,1000] (inclusive), you actually need
+ * to set up your IntMap as 
+ * const IntMap correctedMap(0, 100, 0, 1001);
+ * 
+ * or for extra clarity:
+ * const IntMap correctedMap(0, 100, 0, 1000 + 1);
+ * 
+ * At some point I should submit this as an issue to the Mozzi team to fix the documentation.
+ * 
+ * actually I was wrong. For larger numbers my observation seems to be the case, but for the below mappings, that is incorrect.
+ * */ 
+const IntMap colorToScaleNote7(0, 255, 0, 7); // for 7 note scales
+const IntMap colorToScaleNote5(0, 255, 0, 5);
 
-uint8_t mainLPReso = 50, mainLPCutoff = 100;
 
 
 
 void ambienceGenerator();      // right now i just want to wrap all the sound control stuff in a function so I can easily separate it out from the rest of updateControl()
-
-
+void toneBeatsGenerator();
 
 
 // **********************************************************************************
@@ -399,6 +441,7 @@ void setup()
 
   if (USE_SERIAL) Serial.begin(115200);
   SERIAL_PRINTLN("starting");
+
 
   // start the I2C bus
   Wire.begin(); 
@@ -489,16 +532,15 @@ void setup()
   osc1.setFreq(mtof(noteNameToMIDINote("A3")));
   osc2.setFreq(mtof(noteNameToMIDINote("B4")));
   
-  v0 = v1 = 0;
-  v2 = 127;
   
   // finally, start the timers
   k_i2cUpdateDelay.set(I2C_UPDATE_INTERVAL);      // control how frequently we poll the sensors on the I2C bus (color sensor, both encoders)
-  k_PIDupdate.set(1000 / PID_HZ);                 // update rate for the PID controller that manages the arm position
   
   osc0AmpEnv.setADLevels(160, 140);
   osc1AmpEnv.setADLevels(80, 60);
   osc2AmpEnv.setADLevels(160, 140);
+
+  
 
   // start Mozzi
   startMozzi(MOZZI_CONTROL_RATE);
@@ -519,7 +561,7 @@ void updateControl() {
   if (initialize) {
     reactToDCTimer.set(750);
     reactToDCTimer.start();
-    buttonTimer.set(100);    //125ms is exactly 1/16th notes for 120bpm in 4/4
+    buttonTimer.set(250);    //125ms is exactly 1/16th notes for 120bpm in 4/4
     buttonTimer.start();
     arpTimeout.set(4000);
     arpTimeout.start();
@@ -547,13 +589,19 @@ void updateControl() {
   // SERIAL_PRINTLN(buttonPressed);
   if (buttonTimer.ready()) {
     switch (buttonPressed) {
-      case 0:
+      case 0:     // left button, LED brightness levels
         brightnessIterator = (++brightnessIterator) % NUM_BRIGHTNESS_LEVELS;
         analogWrite(LED_PIN, LEDBrightnessLevels[brightnessIterator]);
         break;
-      case 1:
+      case 1:     // middle button, scale selector
+        scaleContainer.scaleSelector = (scaleContainer.scaleSelector + 1) % scaleContainer.NUM_SCALES;
+        currentScale = scaleContainer.scaleArray[scaleContainer.scaleSelector];
+        numNotesInScale = scaleContainer.numNotesInSelectedScale[scaleContainer.scaleSelector];
+        SERIAL_TABS(2);
+        SERIAL_PRINT("scale: ");
+        SERIAL_PRINTLN(scaleContainer.scaleSelector);
         break;
-      case 2:
+      case 2:     // right button, either osc type changer or possibly switch to chord mode
         break;
         default:
         break;     
@@ -566,12 +614,23 @@ void updateControl() {
   if (k_i2cUpdateDelay.ready()) {
     currentArmAngle = armEncoder.getCumulativePosition();
     currentArmPosition = armAngleToRadius(currentArmAngle);
-    tableDC = tableDCFilter.next(tableEncoder.getCumulativePosition() * 4);
+    currentTableAngle = tableEncoder.getCumulativePosition();
+    tableDC = tableDCFilter.next(currentTableAngle * 4);   // multiplying by 4 scales the raw input in a way that makes the DC filter usable
     updateColorReadings(&colorData);
     // scaleColorData(&colorData);       // scale the blue and red channels to bring them in line with green channel (essential white balance correction)
     k_i2cUpdateDelay.start();            // restart the timer immediately after new color data is acquired
     scaleColorDataFixedPoint(&colorData, &scaledFixedColorData);
     // printColorData();
+    
+    /*
+    // figure out table angular speed in a way that's Mozzi-compatible.
+    // this isn't giving correct results, save for later
+    int16_t tableDisplacement = currentTableAngle - lastTableAngle;
+    lastTableAngle = currentTableAngle;
+    constexpr uint16_t numerator = 4096 * I2C_UPDATE_INTERVAL;
+    calculatedTableRotationPeriod = (uint16_t)(numerator / abs(tableDisplacement));
+    SERIAL_PRINT(tableDisplacement); SERIAL_TAB; SERIAL_PRINTLN(calculatedTableRotationPeriod);
+    */
   }
   
   // if (k_PIDupdate.ready()) {
@@ -609,6 +668,7 @@ void updateControl() {
       }
     } 
   }
+
   // SERIAL_TAB;
   // SERIAL_PRINTLN(targetTableSpeed);
 
@@ -629,6 +689,7 @@ void updateControl() {
 
 
   ambienceGenerator();
+  // toneBeatsGenerator();
 
 
   
@@ -769,63 +830,111 @@ Chord progression = {D, Am, Em, G};
  */
 
 
+// void toneBeatsGenerator() {
+//   // uint8_t note = snapToNearestNote(mappedGreen >> 1, scale_CLydianMIDI, numNotesInScale);
+//   uint8_t note = scale_CLydianMIDI[colorToScaleNote7(mappedGreen)];
+//   osc0Params.noteMIDINumber = note;
+//   osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
+//   osc0Params.volume = 140;
+//   osc0.setFreq(osc0Params.frequency);
+  
+//   osc2Params.noteMIDINumber = osc0Params.noteMIDINumber;
+//   osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
+//   osc2.setFreq((float)osc2Params.frequency + 0.4F);
+//   osc2Params.volume = 140;
+// }
+
+
+void toneBeatsGenerator() {
+
+}
 
 void ambienceGenerator() {
-  uint8_t i = colorToScaleNote(mappedRed);
   static int8_t arpIndex = 0;
   static uint8_t numNotesLeftInArp = 0;
   static bool initialize = true;
-
+  
+  static uint16_t osc0PortTime = 200, osc1PortTime = 200, osc2PortTime = 20;
+  
+  
+  const bool USE_PORTAMENTO = true;
+  
   static uint16_t attack = 100, decay = 500, sustain = 8000, release = 3000;
-
+  
   int8_t octaveShifter = (int8_t)(mappedWhite >> 6);
   static bool arpeggiate = false, arpStarted = false, arpOnTimeOut = true;
-
+  
   if (initialize) {
+    // scaleContainer.scaleSelector = 2;
+    currentScale = scaleContainer.scaleArray[scaleContainer.scaleSelector];
+    numNotesInScale = scaleContainer.numNotesInSelectedScale[scaleContainer.scaleSelector];
     osc0AmpEnv.setADLevels(160, 140);
-    osc1AmpEnv.setADLevels(60, 40);
+    osc1AmpEnv.setADLevels(60, 50);
     osc2AmpEnv.setADLevels(120, 110);
     osc0AmpEnv.setTimes(attack, decay, sustain, release);
     osc1AmpEnv.setTimes(attack, decay, sustain, release);
     osc2AmpEnv.setTimes(attack, decay, sustain, release);
+    initialize = false;
   }
-
+  
   
   octaveShifter = max(-1, octaveShifter - 2); // should set octaveShifter to -1, 0, or 1 octaves added
-  SERIAL_PRINTLN(octaveShifter);
+  // SERIAL_PRINTLN(octaveShifter);
   // octaveShifter *= 12;  //make that actual midi note values by multiplying by 12 to get movement
-
+  
   if (arpTimeout.ready()) {   // it's been long enough to allow an arpeggio again
     arpOnTimeOut = false;
   }
-
-  if (octaveShifter > 0 && !arpOnTimeOut) {   // arp is allowed again and triggered by enough white light
-    arpeggiate = true;
+  
+  if (octaveShifter > 0 && !arpOnTimeOut && !arpStarted) {   // arp is allowed again and triggered by enough white light
+    arpeggiate = (rand(256) <= mappedWhite) ? true : false;
   }
   
+  uint8_t i;
+  if (numNotesInScale == 7) {
+    i = colorToScaleNote7(mappedGreen);
+  } else {
+    i = colorToScaleNote5(mappedGreen);
+  }
+
+  osc0Params.noteMIDINumber = currentScale[i];
   if (osc0Params.lastNoteMIDINumber != osc0Params.noteMIDINumber) {
-    osc0AmpEnv.noteOff();
     osc0AmpEnv.noteOn();
     osc0Params.lastNoteMIDINumber = osc0Params.noteMIDINumber;
   }
   
-  osc0Params.noteMIDINumber = scale_CLydian[i];
   osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
-  osc0.setFreq(osc0Params.frequency);
+  osc0.setFreq((osc0Params.frequency));
   osc0AmpEnv.update();
   osc0Params.volume = osc0AmpEnv.next();
   
   
-  
-  uint8_t j = colorToScaleNote(mappedGreen);
-  // osc1Params.noteMIDINumber = scale_CLydian[(i + 2 ) % numNotesInScale] + octaveShifter;
+  uint8_t j;
+  // osc1Params.noteMIDINumber = scale_CLydianMIDI[(i + 2 ) % numNotesInScale] + octaveShifter;
+  if (numNotesInScale == 7) {
+    j = colorToScaleNote7(mappedBlue);
+  } else {
+    j = colorToScaleNote5(mappedBlue);
+  }
+  switch (scaleContainer.scaleSelector) {
+    case 0:
+      osc1Params.noteMIDINumber = currentScale[(j + 4) % numNotesInScale] - 12;
+      break;
+    case 1: 
+      osc1Params.noteMIDINumber = currentScale[(i + 2) % numNotesInScale] + octaveShifter * 12;
+      break;
+    case 2:
+      osc1Params.noteMIDINumber = currentScale[j] - 12;
+      break;
+    default:
+      break;
+  }
   
   if (osc1Params.lastNoteMIDINumber != osc1Params.noteMIDINumber) {
     osc1AmpEnv.noteOn();
     osc1Params.lastNoteMIDINumber = osc1Params.noteMIDINumber;
   }
   
-  osc1Params.noteMIDINumber = scale_CLydian[j];
   osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
   osc1.setFreq(osc1Params.frequency);
   osc1AmpEnv.update();
@@ -834,9 +943,9 @@ void ambienceGenerator() {
 
   if (!arpeggiate) {
         
-    // osc2Params.noteMIDINumber = scale_CLydian[k] + octaveShifter;
-    osc2Params.noteMIDINumber = scale_CLydian[(i + 3) % numNotesInScale] + (octaveShifter * 12);     // pretty good
-    // osc2Params.noteMIDINumber = scale_CLydian[(i + 3) % numNotesInScale] - 7;
+    // osc2Params.noteMIDINumber = scale_CLydianMIDI[k] + octaveShifter;
+    osc2Params.noteMIDINumber = currentScale[(i + 3) % numNotesInScale] + (octaveShifter * 12);     // pretty good
+    // osc2Params.noteMIDINumber = scale_CLydianMIDI[(i + 3) % numNotesInScale] - 7;
     if (osc2Params.lastNoteMIDINumber != osc2Params.noteMIDINumber) {
       osc2AmpEnv.noteOn();
       osc2Params.lastNoteMIDINumber = osc2Params.noteMIDINumber;
@@ -855,26 +964,34 @@ void ambienceGenerator() {
       numNotesLeftInArp = rand(4, 17);
 
       arpStarted = true;
-      arpNoteTimer.set(min(mappedBlue << 0, 125));
+      arpNoteTimer.set(min(mappedBlue, 192));
       arpNoteTimer.start();
       arpIndex = rand(numNotesInScale);
       osc2AmpEnv.setTimes(5, 5, 100, 100);
     }
     if (arpNoteTimer.ready()) {
-      osc2Params.noteMIDINumber = scale_CLydian[arpIndex] + (12 * (int8_t)rand(0, 3));
+      osc2Params.noteMIDINumber = currentScale[arpIndex] + (12 * (int8_t)rand(-1, 3));
       osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
       osc2Params.volume = 120;
-      osc2.setFreq(osc2Params.frequency);
+
+      osc2Portamento.setTime(osc2PortTime);
+      if (!USE_PORTAMENTO) osc2.setFreq(osc2Params.frequency);
+      
       int8_t arpShift = rand(-5, 6);
       arpIndex += arpShift;   // move to next note in sequence
       // if (arpIndex < 0) {
-      //   arpIndex += numNotesInScale;
-      // } else if (arpIndex > numNotesInScale - 1) {
-      //   arpIndex -= numNotesInScale;
-      // }
-      arpIndex = (arpIndex < numNotesInScale && arpIndex >= 0) ? arpIndex : ((arpIndex < 0) ? arpIndex += numNotesInScale : arpIndex -= numNotesInScale);
-      arpNoteTimer.start();
-      numNotesLeftInArp -= 1;    // we have one fewer notes left in the arp
+        //   arpIndex += numNotesInScale;
+        // } else if (arpIndex > numNotesInScale - 1) {
+          //   arpIndex -= numNotesInScale;
+          // }
+          arpIndex = (arpIndex < numNotesInScale && arpIndex >= 0) ? arpIndex : ((arpIndex < 0) ? arpIndex += numNotesInScale : arpIndex -= numNotesInScale);
+          arpNoteTimer.start();
+          numNotesLeftInArp -= 1;    // we have one fewer notes left in the arp
+        }
+        
+    if (USE_PORTAMENTO) {    
+      osc2Portamento.start(osc2Params.noteMIDINumber);
+      osc2.setFreq_Q16n16(osc2Portamento.next());
     }
 
     if (numNotesLeftInArp == 0) {
@@ -885,12 +1002,18 @@ void ambienceGenerator() {
       arpOnTimeOut = true;
       osc2AmpEnv.setTimes(attack, decay, sustain, release);
     }
-
+    
   }
+  // osc0Params.volume = 0;
+  // osc1Params.volume = 60;
+  // osc2Params.volume = 0;
+
+
+
   // osc2Params.volume = 0;
   
   // static Chord currentChord = progression[1], lastChord = currentChord;
-  // uint8_t i = colorToScaleNote(mappedRed);
+  // uint8_t i = colorToScaleNote7(mappedRed);
 
 
   // osc0Params.note = scale_CHarmonicMajor[i];
@@ -900,14 +1023,14 @@ void ambienceGenerator() {
 
   // osc0.setFreq(osc0Params.frequency);
 
-  // i = colorToScaleNote(mappedGreen);
+  // i = colorToScaleNote7(mappedGreen);
   // osc1Params.note = scale_CHarmonicMajor[i];
   // osc1Params.noteMIDINumber = noteNameToMIDINote(osc1Params.note);
   // osc1Params.frequency = mtof(osc1Params.noteMIDINumber + 0);
   // osc1Params.volume = 60;
   // osc1.setFreq(osc1Params.frequency);
 
-  // i = colorToScaleNote(mappedRed);
+  // i = colorToScaleNote7(mappedRed);
   // i = (i + 3) % numNotesInScale;
   // osc2Params.note = scale_CHarmonicMajor[i];
   // osc1Params.noteMIDINumber = noteNameToMIDINote(osc2Params.note);
@@ -924,11 +1047,11 @@ void ambienceGenerator() {
   // osc0.setFreq_Q16n16(osc0Portamento.next());
 
   // if (mappedRed > mappedGreen) {
-  //   i = colorToScaleNote(mappedGreen + ((mappedRed - mappedGreen) >> 1)); // this should get me something like the average between red and green
+  //   i = colorToScaleNote7(mappedGreen + ((mappedRed - mappedGreen) >> 1)); // this should get me something like the average between red and green
   // } else if (mappedGreen > mappedRed) {
-  //   i = colorToScaleNote(mappedGreen - ((mappedRed - mappedGreen) >> 1));
+  //   i = colorToScaleNote7(mappedGreen - ((mappedRed - mappedGreen) >> 1));
   // } else {
-  //   i = colorToScaleNote(mappedGreen);
+  //   i = colorToScaleNote7(mappedGreen);
   // }
   // osc1Params.note = scale_DMixolydian[i];
   // osc1Params.noteMIDINumber = noteNameToMIDINote(osc1Params.note);
@@ -950,7 +1073,7 @@ void ambienceGenerator() {
   // }
   // osc1.setFreq_Q16n16(osc1Portamento.next());
 
-  // i = colorToScaleNote(mappedBlue);
+  // i = colorToScaleNote7(mappedBlue);
   // i = (i + 5) % numNotesInScale;
   // osc2Params.note = scale_DMixolydian[i];
   // osc2Params.noteMIDINumber = noteNameToMIDINote(osc2Params.note);
