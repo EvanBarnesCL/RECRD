@@ -187,3 +187,63 @@ uint8_t scaleNumbers_EbPentatonicMinor[numNotesInScale];
 // const uint8_t numNotesInScale = 7;
 // const char* scale_DMixolydian[numNotesInScale] = {"D3", "E3", "F#3", "G3", "A3", "B3", "C4"};
 // Chord progressionVar1[numChordsInProgression] = {DVar1, AmVar1, EmVar1, GVar1};
+
+
+
+
+
+
+
+
+
+// this struct lets you define colors, creating a name and specific values of red, green, and blue for them. Can be used for defining actions when a
+// specific color is seen by the color sensor, or by quantizing the color readings into specific named values, which is what findClosestColor() does.
+struct ReferenceColor
+{
+  const char *name;
+  uint8_t red;
+  uint8_t green;
+  uint8_t blue;
+};
+
+// Define your reference colors
+const ReferenceColor RED_REF =     {"RED", 255, 126, 129};
+const ReferenceColor GREEN_REF =   {"GREEN", 167, 255, 174}; // example values
+const ReferenceColor BLUE_REF =    {"BLUE", 123, 152, 255};   // example values
+const ReferenceColor CYAN_REF =    {"CYAN", 115, 182, 255};
+const ReferenceColor MAGENTA_REF = {"MAGENTA", 255, 154, 228}; // example values
+const ReferenceColor YELLOW_REF =  {"YELLOW", 255, 248, 138};   // example values
+
+// Array of reference colors
+const uint8_t numReferenceColors = 6;
+const ReferenceColor referenceColors[numReferenceColors] = {RED_REF, GREEN_REF, BLUE_REF, CYAN_REF, MAGENTA_REF, YELLOW_REF};
+
+
+
+
+
+
+ReferenceColor findClosestColor(uint8_t redRaw, uint8_t greenRaw, uint8_t blue_raw);    // quantizes raw color readings into the nearest named color
+
+
+
+ReferenceColor findClosestColor(uint8_t redRaw, uint8_t greenRaw, uint8_t blue_raw)
+{
+  uint32_t minDistance = UINT32_MAX;
+  ReferenceColor closestColor = referenceColors[0];
+
+  for (int i = 0; i < numReferenceColors; i++)
+  {
+    uint32_t sq_dst = (redRaw - referenceColors[i].red) * (redRaw - referenceColors[i].red) +
+                      (greenRaw - referenceColors[i].green) * (greenRaw - referenceColors[i].green) +
+                      (blue_raw - referenceColors[i].blue) * (blue_raw - referenceColors[i].blue);
+
+    if (sq_dst < minDistance)
+    {
+      minDistance = sq_dst;
+      closestColor = referenceColors[i];
+    }
+  }
+
+  return closestColor;
+}
