@@ -1,48 +1,12 @@
-/**
- * To Do: 
- * - scale the color data using FixMath operations instead of fancy bit shifting stuff. will make it easier for users to tune the scaling if they want
- * - try not using PID again for the arm controller
- * - try a version where the arm moves in 20mm wide tracks across the table, set by the knob
- * - I figured out that the volume variables were type char in the example, which is int8_t. Using uint8_t increases overall volume, but also starts
- *    the synth with obnoxious loud sounds immediately. 
- * - figure out why the arm positioning math isn't working correctly
- * - come up with more interesting synth sounds
- * - instead of just setting the frequencies of three oscs, use color channels to change chords and things
- * - trying sampling color data as a waveform
- */
-
-
-
-/**
- * shit I've learned about Mozzi through struggle and blood:
- * 
- * - EventDelay timers have to be global or else they never update. This is almost certainly true of other things in Mozzi as well.
- *   I had wanted to use a static EventDelay timer in a function that gets called from within updateControl(), but that does not work. 
- */
-
-
-// if this is defined, the PWM rate for Timer 0 is 62.5kHz, which removes audible PWM noise from driving motors.
-// It has a few side effects. It breaks any use of millis(). delay() also will not work, but I plan to avoid
-// the use of both of those any time Mozzi is running anyway, so this might be fine! So far this hasn't affected
-// my very basic Mozzi sketch.
-// if this is defined, the PWM rate for Timer 0 is 62.5kHz, which removes audible PWM noise from driving motors.
-
-
-#define USE_FAST_PWM 1        // set to 1 to change the PWM clock divisor for pins 5 and 6 (timer 0) - removes motor noise from audio
-#define USE_LED_PWM  1        // set to 1 to change the PWM clock divisor for pins 3 and 11 (timer 2) - removes PWM noise due to LED dimming from audio
-
-
 #include <Arduino.h>
 #include <Crunchlabs_DRV8835.h>     // motor driver
 #include <Wire.h>                   // I2C
 #include <PWMFreak.h>               // Changes clock rate of timers (used to remove audible noise from motor driver and LED dimming)
-#define MOZZI_CONTROL_RATE 128      // Frequency of updateControls() calls
 #include <Mozzi.h>                  // Main synthesizer library
 #include <Oscil.h>                  // Oscillator
 #include <tables/saw2048_int8.h>    // Saw wavetable
 #include <tables/triangle_dist_cubed_2048_int8.h>
 #include <tables/triangle_valve_2_2048_int8.h>
-// #include <tables/triangle_warm8192_int8.h>
 #include <IntMap.h>                 // A more efficient replacement for map()
 #include <EventDelay.h>             // Mozzi library for performing actions at specific time intervals without delay() or millis()
 #include <mozzi_utils.h>
@@ -51,12 +15,11 @@
 #include <CLS16D24.h>               // Color sensor
 #include <AS5600.h>                 // Magnetic encoders for the arm and table positions
 #include <DCfilter.h>               // DC filter used to detect changes in a signal (used for recognizing when arm and table stop moving)
-// #include <FastPID.h>                // Fast fixed point math PID implementation used for controlling arm position - might remove
 #include <AutoMap.h>                // A version of map() that is auto-ranging. Used for mapping color values to control signals.
 #include <mozzi_rand.h>             // Faster random number generation
 #include <Portamento.h>
 #include <ADSR.h> 
-// #include <ReverbTank.h>
+
 
 /**
  * This is a macro for easily enabling or disabling the Serial monitor print statements. 
@@ -69,7 +32,7 @@
  * 
  * In your main code, rather than using Serial.print() or Serial.println(), use their aliases defined below (e.g., SERIAL_PRINTLN()):
  *  */ 
-#define USE_SERIAL 1
+// #define USE_SERIAL 1
 
 #define USE_SERIAL 1
 
@@ -93,52 +56,55 @@
 // Arm and Table stuff
 // **********************************************************************************
 
+// pin assignments
+constexpr uint8_t TABLE_SPEED_PIN = 5,
+                  TABLE_DIR_PIN = 4,
+                  ARM_SPEED_PIN = 6,
+                  ARM_DIR_PIN = 7,
+                  LED_PIN = 11;
 
-constexpr uint8_t TABLE_SPEED_PIN = 5;
-constexpr uint8_t TABLE_DIR_PIN = 4;
-constexpr uint8_t ARM_SPEED_PIN = 6;
-constexpr uint8_t ARM_DIR_PIN = 7;
-constexpr uint8_t LED_PIN = 11;
+// set to 1 to change the PWM clock divisor for pins 5 and 6 (timer 0) - removes motor noise from audio
+#define USE_FAST_PWM 1
 
-
+// motor objects
 DRV8835 tableMotor(TABLE_SPEED_PIN, TABLE_DIR_PIN, 50, true);
 DRV8835 armMotor(ARM_SPEED_PIN, ARM_DIR_PIN, 50, true);
 
+// encoder objects
+AS5600L tableEncoder;
+AS5600 armEncoder;
 
-void homeArm(int16_t startingPosition = 0);
-
+// constants and variables related to the arm
 constexpr uint8_t MAX_CONSTRAINED_RADIUS = 75;  // the maximum absolute value radius the arm will be allowed to move to during normal operation
+int8_t currentArmPosition = 0; // current arm position in millimeters from center of table
+int16_t currentArmAngle = 0;
+DCfilter armDCFilter(0.95);          // DC filter detects changes in arm position (settles to 0 if the arm is not moving)
 
+// constants and variables related to the table
+constexpr int8_t DCMovementThreshold = 30;   // If the DC filter shows a value between + and - DCMovementThreshold, we know that axis is not moving
+int32_t currentTableAngle = 0, lastTableAngle = 0;
+DCfilter tableDCFilter(0.6);        // DC filter for table movement
+int16_t tableDC = 0;                // the value of the DC filter for table movement.
+
+// function prototypes
+void homeArm(int16_t startingPosition = 0);
 int16_t armRadiusToAngle(int16_t radiusMM);     // convert arm radius in millimeters to angle in encoder counts
 int16_t armAngleToRadius(int16_t angleCounts);  // convert arm angle in encoder counts to radius in millimeters
 int16_t convertPotValToArmRadius(uint16_t potVal);
 int16_t convertPotValToTableSpeed(int16_t potVal);
-// void moveArmToRadius(int8_t targetRadius, int8_t currentRadius);
 void moveArmToRadius(int8_t targetRadius, int16_t currentAngle);
 void moveArmToAngle(int16_t targetAngle, int16_t currentAngle);
 
-AS5600L tableEncoder;
-AS5600 armEncoder;
-
-int8_t currentArmPosition = 0; // current arm position in millimeters from center of table
-int16_t currentArmAngle = 0;
-int32_t currentTableAngle = 0, lastTableAngle = 0;
-uint16_t calculatedTableRotationPeriod = 0;    // for calculated table RPM. This will be how long it takes in milliseconds to complete 1 revolution at current speed
-
-DCfilter armDCFilter(0.95);          // DC filter detects changes in arm position (settles to 0 if the arm is not moving)
-DCfilter tableDCFilter(0.6);        // DC filter for table movement
-constexpr int8_t DCMovementThreshold = 30;   // If the DC filter shows a value between + and - DCMovementThreshold, we know that axis is not moving
-int16_t tableDC = 0;                // the value of the DC filter for table movement.
-
-
-
 // **********************************************************************************
-// Color sensor
+// Color sensor stuff
 // **********************************************************************************
 
+// instantiate the object that will manage the color sensor
 CLS16D24 RGBCIR;
-uint16_t conversionTime = 0;      // time in milliseconds required for the color sensor to acquire new data - changes based on resolution settings. this variable is not currently used.
 
+bool updateChannels[5] = {false, false, false, false, false}; // Flags to control which channels to update. defaults to all five off.
+
+// this enum class provides a clear way to explicitly reference a color channel (instead of using an integer or something)
 enum class ColorChannels {
   RED,
   GREEN,
@@ -147,9 +113,9 @@ enum class ColorChannels {
   IR
 };
 
-ColorChannels currentColorChannel = ColorChannels::RED;
-
-// struct for storing the raw color value readings from the sensor as uint16_t
+// struct for storing the raw color value readings from the sensor as uint16_t.
+// be aware that if you change the resolution of the sensor to exceed 16 bits, you're going to have a problem
+// with overflow here.
 struct ColorValues {
   uint16_t red = 0;
   uint16_t green = 0;
@@ -160,7 +126,7 @@ struct ColorValues {
 
 ColorValues colorData;      // struct for the raw color data
 
-
+// this stores color data as unsigned 16 bit integers in the fixed point format that Mozzi and FixMath use.
 struct FixedPointColorValues {
   UFix<16, 0> redFixed = 0;
   UFix<16, 0> greenFixed = 0;  
@@ -172,32 +138,23 @@ struct FixedPointColorValues {
 // struct for storing the color data as fixed point values after they have been white balance corrected (after scaleColorDataFixedPoint() is applied to the raw colorData)
 FixedPointColorValues scaledFixedColorData;
 
+// where color data that has been mapped into control signals will be stored
+uint8_t mappedGreen = 0, mappedBlue = 0, mappedRed = 0, mappedWhite = 0;   
 
-bool updateChannels[5] = {false, false, false, false, false}; // Flags to control which channels to update. defaults to all five off.
-
-uint8_t mappedGreen = 0, mappedBlue = 0, mappedRed = 0, mappedWhite = 0;   // where color data that has been mapped into control signals will be stored
-
-bool updateColorReadings(ColorValues *colorReadings);
-void printColorData();
-
-void scaleColorData(ColorValues *rawData);      // used to scale the RGB values relative to each other a bit
-void scaleColorDataFixedPoint(ColorValues *rawData, FixedPointColorValues *scaledVals);   // scales raw sensor values and returns them as fixed point math values instead of uint16_t
-
-// delay timer for updating sensor data and PID controller for arm
-EventDelay k_i2cUpdateDelay, k_PIDupdate;
+// delay timer for updating sensor data. When the sensor data is getting updated, the processor can't simultaneously update the sound it's generating.
+// You can update the sensor more frequently, but that might negatively impact sound generation. This also updates all three sensors simultaneously,
+// and it might work better to update each of them at staggered intervals. 
+EventDelay k_i2cUpdateDelay;
 constexpr uint8_t I2C_UPDATE_INTERVAL = 50;       // time in milliseconds
 
-// used to only update PID every few cycles of updateControl(). More frequent updates lead to better movement control, but take up too much processing power
-const uint8_t PID_DIVISOR = 1;                    
-constexpr uint8_t PID_HZ = MOZZI_CONTROL_RATE / (float)PID_DIVISOR;
-
+// constants and variables relating to the LEDs on the arm that illuminate the table
+#define USE_LED_PWM  1        // set to 1 to change the PWM clock divisor for pins 3 and 11 (timer 2) - removes PWM noise due to LED dimming from audio
 constexpr uint8_t NUM_BRIGHTNESS_LEVELS = 5;
 uint8_t LEDBrightnessLevels[NUM_BRIGHTNESS_LEVELS] = {0, 32, 64, 192, 255};
 uint8_t brightnessIterator = 3; // default to brightness level 3 on startup
 
-
-
-
+// this struct lets you define colors, creating a name and specific values of red, green, and blue for them. Can be used for defining actions when a 
+// specific color is seen by the color sensor, or by quantizing the color readings into specific named values, which is what findClosestColor() does.
 struct ReferenceColor {
     const char* name;
     uint8_t red;
@@ -217,123 +174,63 @@ const ReferenceColor YELLOW_REF = {"YELLOW", 255, 248, 138};   // example values
 const uint8_t numReferenceColors = 6;
 const ReferenceColor referenceColors[numReferenceColors] = {RED_REF, GREEN_REF, BLUE_REF, CYAN_REF, MAGENTA_REF, YELLOW_REF};
 
+// function prototypes
+bool updateColorReadings(ColorValues *colorReadings);
+void printColorData();
+void scaleColorData(ColorValues *rawData);      // used to scale the RGB values relative to each other a bit
+void scaleColorDataFixedPoint(ColorValues *rawData, FixedPointColorValues *scaledVals);   // scales raw sensor values and returns them as fixed point math values instead of uint16_t
+ReferenceColor findClosestColor(uint8_t redRaw, uint8_t greenRaw, uint8_t blue_raw);      // quantizes raw color readings into the nearest named color
 
-ReferenceColor findClosestColor(uint8_t redRaw, uint8_t greenRaw, uint8_t blue_raw);
 
 // **********************************************************************************
-// Potentiometers and switch
+// Potentiometers and buttons
 // **********************************************************************************
 
-constexpr uint8_t POT_A_PIN = A0;
-constexpr uint8_t POT_B_PIN = A1;
-constexpr uint8_t AUDIO_IN_PIN = A2;
-constexpr uint8_t BUTTONS_PIN = A3;
+// pin assignments
+constexpr uint8_t POT_A_PIN = A0,
+                  POT_B_PIN = A1,
+                  AUDIO_IN_PIN = A2,
+                  BUTTONS_PIN = A3;    // all 3 buttons  are connected to the same analog pin. uses analog multiplexing to distinguish button presses.
 
 uint8_t buttonPressed = 255;                        // 255 means no button pressed, 0, 1 or 2 indicates which of the three buttons was pressed
 uint8_t getButtonPressed(uint16_t buttonPinVal);    // pass an analog reading on BUTTON_PIN into the parameter. Returns 1, 2, or 3 if one of those buttons is pressed, otherwise returns 255.
-uint8_t getDebouncedButton();                       // performs extra layer of debouncing
 
 // **********************************************************************************
 // Mozzi stuff
 // **********************************************************************************
 
-// Oscil Wash example sketch stuff
-
+// Set the frequency of updateControls() calls - by default they occur at 128Hz. 
+// Note that this number should always be a power of 2 (e.g., 1, 2, 4, 8, 16, 32, 64, 128, etc).
+// More frequent updates here create better responsiveness for the controls, but the tradeoff is that it takes time away from generating sound,
+// so if you create more frequent updateControls() calls (e.g., by setting this to 256), you might start hearing glitchy audio artifacts. In general,
+// make this the smallest value you can that still feels responsive to leave as much processing power free for the audio synthesis as possible.
+#define MOZZI_CONTROL_RATE 128
 
 Oscil<TRIANGLE_DIST_CUBED_2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc0(TRIANGLE_DIST_CUBED_2048_DATA);
 Oscil<SAW2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc1(SAW2048_DATA);
 Oscil<TRIANGLE_VALVE_2_2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc2(TRIANGLE_VALVE_2_2048_DATA);
-// Oscil<TRIANGLE_WARM8192_NUM_CELLS, TRIANGLE_WARM8192_SAMPLERATE> osc1(TRIANGLE_WARM8192_DATA);
 
 
-// audio volumes updated each control interrupt and reused in audio till next control
-// well this is wild. The original example sketch I built this from used char as the datatype, which is not something that
-// should ever be used except for storing characters of text. A lot of older Arduino sketches use char when a more appropriate
-// datatype would be byte, or even better, uint8_t. The problem with char is that it's not rigorously defined. On some 
-// platforms like ARM, it's usually an unsigned 8 bit integer, but apparently, on the AVR microcontrollers in the Arduino 
-// environment, it's actually a signed 8 bit integer. So for this program, I have been mapping color data into volume controls
-// into a range of 0 - 255, as though volume were a uint8_t. But it's actually been overflowing and wrapping around to the range
-// -127 to 127 to fit into char/int8_t. For now, I'm actually going to leave the volume variables as int8_t. It produces a nice
-// effect where the synth doesn't really start producing sound until the AutoMaps have picked up enough data to start ranging
-// correctly for the color data, since the volume gets centered on 0. I can set this variable to uint8_t, and one nice effect
-// of that is that the volume is much louder, but it also starts making noise immediately. It's unpleasant sounding until the
-// AutoMaps kick in and start ranging things correctly. I could fix this by adding some kind of volume fade that runs when the
-// program boots up, but I like that with int8_t, it's adaptive to the actual color data it receives and isn't time based.
-
-// DEPRECATED. Using OscXParams structs that contain volume info now
-// int8_t v0, v1, v2;
 
 // **********************************************************************************
 // Music stuff
 // **********************************************************************************
 
+// typedef uint8_t MIDI_NOTE;    
+using MIDI_NOTE = uint8_t;      // just for readability elsewhere, I'm creating an alias called MIDI_NOTE that is just uint8_t datatype. 
+
 // an array of 4 pointers to const char* strings that define up to four notes in a chord
 struct Chord {
   const char* notes[4];
 };
-/*
-// chord progression vi-I-IV-iii
-Chord Am = {"C3", "E3", "A3", " "};
-Chord Am7 = {"C3", "E3", "A3", "G4"};
-
-Chord C = {"E3," "G3", "C4", " "};
-Chord Cadd9 = {"E3," "G3", "C4", "D4"};
-
-Chord F = {"C3", "F3", "A3", " "};
-Chord Fm6 = {"C4", "F3", "G#3", "D4"};
-
-Chord Em = {"E3", "G3", "B3", " "};
-Chord Em7 = {"E3", "G3", "B3", "D4"};
-
-Chord chordProgression[4] = {Am, C, F, Em};
-Chord chordProgressionVaried[4] = {Am7, Cadd9, Fm6, Em7};
-Chord chordProgressionCombined[8] = {Am, Am7, C, Cadd9, F, Fm6, Em, Em7};     // might do a probabilistic version of this where it's like 75% the normal notes, 25% the augmented ones
-
-
-
-const char* testArp[8] = {"C2", "E3", "A3", "G4", "C4", "F4", "G#4", "D5"};
-
-const uint8_t numNotesInScale = 15;
-const char* scale_EbPentatonicMinor[numNotesInScale] = {"D#2", "F#2", "G#2", "A#2", "C#3", "D#3", "F#3", "G#3", "A#3", "C#4", "D#4", "F#4", "G#4", "A#4", "C#5"};
-uint8_t scaleNumbers_EbPentatonicMinor[numNotesInScale];
-
-
-*/
-
-
-// D scale mixolydian diatonic chord progression
-// Chord D = {"A2", "D3", "F#3", " "}, Am = {"A2", "C3", "E3", " "}, Em = {"G3", "B3", "E4", " "}, G = {"G3", "B3", "D4", " "};
-// Chord DVar1 = {"D2", "F#2", "A2", " "}, AmVar1 = {"A2", "E3", "C4", " "}, EmVar1 = {"E3", "G3", "B3", " "}, GVar1 = {"G3", "B3", "D4", " "};
-// const uint8_t numChordsInProgression = 4;
-// Chord progression[numChordsInProgression] = {D, Am, Em, G};
-// const uint8_t numNotesInScale = 7;
-// const char* scale_DMixolydian[numNotesInScale] = {"D3", "E3", "F#3", "G3", "A3", "B3", "C4"};
-// Chord progressionVar1[numChordsInProgression] = {DVar1, AmVar1, EmVar1, GVar1};
-
-
-// typedef uint8_t MIDI_NOTE;    
-using MIDI_NOTE = uint8_t;      // just for readability elsewhere, I'm creating an alias called MIDI_NOTE that is just uint8_t datatype. 
 
 
 // C#maj Pentatonic
 const MIDI_NOTE scale_CPentatonicMajor[5] = {48, 50, 52, 55, 57};
 
-
 // C harmonic major scale
 const char* scale_CHarmonicMajor[] = {"C3", "D3", "E3", "F3", "G3", "G#3", "B3"};
 const MIDI_NOTE scale_CHarmMajorMIDI[7] = {48, 50, 52, 53, 55, 56, 59};
-
-Chord Cmaj_I = {scale_CHarmonicMajor[0], scale_CHarmonicMajor[2], scale_CHarmonicMajor[4]};
-Chord Ddim_ii = {scale_CHarmonicMajor[1], scale_CHarmonicMajor[3], scale_CHarmonicMajor[5]};
-Chord Emin_iii = {scale_CHarmonicMajor[2], scale_CHarmonicMajor[4], scale_CHarmonicMajor[6]};
-Chord Fmin_iv = {scale_CHarmonicMajor[3], scale_CHarmonicMajor[4], scale_CHarmonicMajor[0]};
-Chord Gmaj_V = {scale_CHarmonicMajor[4], scale_CHarmonicMajor[6], scale_CHarmonicMajor[1]};
-Chord GSharpAug_VI = {scale_CHarmonicMajor[5], scale_CHarmonicMajor[0], scale_CHarmonicMajor[2]};
-Chord Bdim_vii = {scale_CHarmonicMajor[6], scale_CHarmonicMajor[1], scale_CHarmonicMajor[3]};
-
-constexpr uint8_t numChordsInProgression = 7;
-Chord progression[numChordsInProgression] = {Cmaj_I, Ddim_ii, Emin_iii,Fmin_iv, Gmaj_V, GSharpAug_VI, Bdim_vii};
-
 
 // Eb pentatonic minor scale
 const char* scale_EbPentatonicMinor[5] = {"D#3", "F#3", "G#3", "A#3", "C#4"};
@@ -343,12 +240,14 @@ MIDI_NOTE scale_EbPentatonicMinorMIDI[5] = {51, 54, 56, 58, 61};
 constexpr MIDI_NOTE root_CLydianScale = 48;     // MIDI note number for C3
 const MIDI_NOTE scale_CLydianMIDI[7] = {root_CLydianScale, root_CLydianScale + 2, root_CLydianScale + 4, root_CLydianScale + 6, root_CLydianScale + 7, root_CLydianScale + 9, root_CLydianScale + 11};
 
+// number of scales we'll be storing in the container
+constexpr uint8_t NUM_SCALES = 3;
 
 // array for storing the scales and another array for storing the associated note numbers
 struct scaleStorage {
-  const uint8_t NUM_SCALES = 3;
+  const uint8_t numScales = 3;
   uint8_t scaleSelector = 0;
-  const MIDI_NOTE* scaleArray[3] = {scale_EbPentatonicMinorMIDI, scale_CLydianMIDI, scale_CPentatonicMajor};
+  const MIDI_NOTE* scaleArray[NUM_SCALES] = {scale_EbPentatonicMinorMIDI, scale_CLydianMIDI, scale_CPentatonicMajor};
   const uint8_t numNotesInSelectedScale[3] = {        // this calculates number of notes in each scale
     sizeof(scale_EbPentatonicMinorMIDI) / sizeof(scale_EbPentatonicMinorMIDI[0]),
     sizeof(scale_CLydianMIDI) / sizeof(scale_CLydianMIDI[0]),
@@ -360,7 +259,6 @@ scaleStorage scaleContainer;
 
 const MIDI_NOTE* currentScale = scaleContainer.scaleArray[scaleContainer.scaleSelector];
 uint8_t numNotesInScale = scaleContainer.numNotesInSelectedScale[scaleContainer.scaleSelector];
-
 
 
 
@@ -381,20 +279,9 @@ Portamento<MOZZI_CONTROL_RATE> osc0Portamento, osc1Portamento, osc2Portamento;
 
 ADSR <MOZZI_CONTROL_RATE, MOZZI_CONTROL_RATE> osc0AmpEnv, osc1AmpEnv, osc2AmpEnv;   // ADSR envelopes for all three oscillators
 
-
-void convertArray_NoteNumbersToNames(const uint8_t midiNotes[], uint8_t numNotes, const char* noteNames[]);
-void convertArray_NoteNamesToNumbers(const char* noteNames[], uint8_t numNotes, uint8_t midiNotes[]);
-uint8_t snapToNearestNote(uint8_t inputValue, const uint8_t notes[], uint8_t numNotes);
-void setFreqsFromChord(const Chord& chord, UFix<12,15>& f1, UFix<12,15>& f2, UFix<12,15>& f3, UFix<12,15>& f4);
-const char* getNoteFromArpeggio(const char* notes[], uint8_t numNotes, uint8_t selector);
-uint8_t noteNameToMIDINote(const char* noteName);          // convert note names to MIDI note numbers (e.g., F#2 -> 42)
-const char* MIDINoteToNoteName(uint8_t note);     // convert MIDI note to note name (e.g., 42 -> F#2)
-
-
-
-uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, uint8_t manualIndex, int8_t offset, uint8_t arpMode, uint8_t arpSpread);
-
+// Mozzi EventDelay timers, used instead of millis() for timing
 EventDelay chordTimer, arpDurationTimer, arpNoteTimer, arpTimeout;
+EventDelay osc0ButtonMode2NoteTimer, osc1ButtonMode2NoteTimer, osc2ButtonMode2NoteTimer;
 
 /**
  * I just figured out that IntMap doesn't work as documented. documentation says that it's this:
@@ -413,17 +300,23 @@ EventDelay chordTimer, arpDurationTimer, arpNoteTimer, arpTimeout;
 const IntMap colorToScaleNote7(0, 255, 0, 7); // for 7 note scales
 const IntMap colorToScaleNote5(0, 255, 0, 5);
 
-
-
-
-void ambienceGenerator();      // right now i just want to wrap all the sound control stuff in a function so I can easily separate it out from the rest of updateControl()
-void toneBeatsGenerator();
-
-
+// variables related to the buttons
 bool enableButton2Mode = false, previousEnableButton2Mode = false;
 uint8_t lastButtonMode = 0, currentButtonMode = 0;
 
-EventDelay osc0ButtonMode2NoteTimer, osc1ButtonMode2NoteTimer, osc2ButtonMode2NoteTimer;
+
+// function prototypes
+void convertArray_NoteNumbersToNames(const uint8_t midiNotes[], uint8_t numNotes, const char* noteNames[]);
+void convertArray_NoteNamesToNumbers(const char* noteNames[], uint8_t numNotes, uint8_t midiNotes[]);
+uint8_t snapToNearestNote(uint8_t inputValue, const uint8_t notes[], uint8_t numNotes);
+void setFreqsFromChord(const Chord& chord, UFix<12,15>& f1, UFix<12,15>& f2, UFix<12,15>& f3, UFix<12,15>& f4);
+const char* getNoteFromArpeggio(const char* notes[], uint8_t numNotes, uint8_t selector);
+uint8_t noteNameToMIDINote(const char* noteName);          // convert note names to MIDI note numbers (e.g., F#2 -> 42)
+const char* MIDINoteToNoteName(uint8_t note);     // convert MIDI note to note name (e.g., 42 -> F#2)
+uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, uint8_t manualIndex, int8_t offset, uint8_t arpMode, uint8_t arpSpread);
+void ambienceGenerator();      // right now i just want to wrap all the sound control stuff in a function so I can easily separate it out from the rest of updateControl()
+void toneBeatsGenerator();
+
 
 // **********************************************************************************
 // Setup
@@ -459,7 +352,7 @@ void setup()
     SERIAL_PRINTLN("ERROR: couldn't detect the sensor");
     while (1){}            
   }
-  // IMPORTANT: Set the I2C clock to 400kHz fast mode AFTER initializing the connection to the sensor.
+  // IMPORTANT: Set the I2C clock to 400kHz fast mode AFTER initializing the connection to the sensors.
   // Need to use fastest I2C possible to minimize latency for Mozzi.
   Wire.setClock(400000);
 
@@ -486,8 +379,7 @@ void setup()
   */
   RGBCIR.setResolutionAndConversionTime(0x02);
   SERIAL_PRINT("Conversion time: ");
-  conversionTime = RGBCIR.getConversionTimeMillis();
-  SERIAL_PRINTLN(conversionTime);  // Calculates the conversion time determined by setResolutionAndConversionTime()
+  SERIAL_PRINTLN(RGBCIR.getConversionTimeMillis());  // Calculates the conversion time determined by setResolutionAndConversionTime()
   SERIAL_PRINT("Resolution: ");
   SERIAL_PRINTLN(RGBCIR.getResolution());            // Calculates resolution determined by setResolutionAndConversionTime()
 
@@ -510,7 +402,7 @@ void setup()
     // use fast PWM to remove audible noise from driving the motors. 
     // IMPORTANT: This breaks millis() and delay(), and may have other effects I haven't
     // found yet. After this line, you can't use millis() or delay() calls and have them
-    // behave as expected.
+    // behave as expected. But Mozzi offers event timers that work in place of millis() anyway.
     setPwmFrequency(5, 1);    // sets Timer0 clock divisor to 1 instead of 64. This moves the motor control pins above audible range
   }
   
@@ -524,12 +416,7 @@ void setup()
     digitalWrite(LED_PIN, HIGH);  // just turn the color sensor LEDs on at full brightness
   }
 
-  // the scaleNumers_EbPentatonicMinor array needs to be initialized
-  // convertArray_NoteNamesToNumbers(scale_EbPentatonicMinor, numNotesInScale, scaleNumbers_EbPentatonicMinor);
-  
-  // convertArray_NoteNamesToNumbers(scale_DMixolydian, numNotesInScale, MIDIscale_DMixolydian);
-  
-  // Oscil wash example sketch stuff
+
   // set harmonic frequencies
   osc0.setFreq(mtof(noteNameToMIDINote("E2")));
   osc1.setFreq(mtof(noteNameToMIDINote("A3")));
@@ -539,11 +426,10 @@ void setup()
   // finally, start the timers
   k_i2cUpdateDelay.set(I2C_UPDATE_INTERVAL);      // control how frequently we poll the sensors on the I2C bus (color sensor, both encoders)
   
+  // amplitude envelope settings for the oscillators (attack and decay -> basically fade in and fade out for each triggered note)
   osc0AmpEnv.setADLevels(160, 140);
   osc1AmpEnv.setADLevels(80, 60);
   osc2AmpEnv.setADLevels(160, 140);
-
-  
 
   // start Mozzi
   startMozzi(MOZZI_CONTROL_RATE);
@@ -576,6 +462,11 @@ void updateControl() {
   // maximum possible input values (if this were a standard analogRead(), that would be 0 and 1023). As you update the function, it keeps track of
   // the mapping value you provide it, and the min and max values it has seen become the new min and max values for the input map range. Note that
   // the parameters are ints, so signed 16 bit values, and you have to be sure the numbers you pass into the parameters will fit in that variable size.
+  // 
+  // Note that this only goes one way. If a new max value is seen, that's the stored max value until the next system reset. If you shine a really bright
+  // light on the sensors and max out the readings for all the color channels, this mapping will never relax back to the lower light level readings
+  // that occur once you stop shining the bright light. It's like if you were used to a dark room, walked outside into bright sunlight, and your eyes
+  // adapted to the bright light and then never adapted to any dim light after that. This could be changed with some kind of relaxation function.
   //
   // The reason these are static variables inside updateControl() instead of being global is that I wanted to use the RGBCIR.getResolution() function
   // to be able to set the size of the mapping, rather than hardcoding the value. That way the maps get dynamically resized based on the chosen 
@@ -589,7 +480,11 @@ void updateControl() {
   // 0 = B1, 1 = B2, 2 = B3, 255 = no press
   // deal with the button presses
   buttonPressed = getButtonPressed(mozziAnalogRead<10>(BUTTONS_PIN));
-  // SERIAL_PRINTLN(buttonPressed);
+
+  // this timer prevents the buttons from being updated too frequently
+  // FIX THIS: this creates specific windows of time where the buttons can be pressed. Instead it should be something like:
+  // if (buttonPressed < 255 && buttonTimer.ready())... basically right now every time the timer is ready, this if statement will execute,
+  // and it restarts the timer at the end of the block, which isn't what I want. the timer should only restart when a button has been pressed.
   if (buttonTimer.ready()) {
     switch (buttonPressed) {
       case 0:     // left button, LED brightness levels
@@ -600,7 +495,7 @@ void updateControl() {
         break;
       case 1:     // middle button, scale selector
         // enableButton2Mode = false;
-        scaleContainer.scaleSelector = (scaleContainer.scaleSelector + 1) % scaleContainer.NUM_SCALES;
+        scaleContainer.scaleSelector = (scaleContainer.scaleSelector + 1) % scaleContainer.numScales;
         currentScale = scaleContainer.scaleArray[scaleContainer.scaleSelector];
         numNotesInScale = scaleContainer.numNotesInSelectedScale[scaleContainer.scaleSelector];
         SERIAL_TABS(2);
@@ -631,41 +526,33 @@ void updateControl() {
     scaleColorDataFixedPoint(&colorData, &scaledFixedColorData);
     // printColorData();
     
-    /*
-    // figure out table angular speed in a way that's Mozzi-compatible.
-    // this isn't giving correct results, save for later
-    int16_t tableDisplacement = currentTableAngle - lastTableAngle;
-    lastTableAngle = currentTableAngle;
-    constexpr uint16_t numerator = 4096 * I2C_UPDATE_INTERVAL;
-    calculatedTableRotationPeriod = (uint16_t)(numerator / abs(tableDisplacement));
-    SERIAL_PRINT(tableDisplacement); SERIAL_TAB; SERIAL_PRINTLN(calculatedTableRotationPeriod);
-    */
   }
   
-  // if (k_PIDupdate.ready()) {
-  //   targetArmPos = convertPotValToArmRadius(mozziAnalogRead<10>(POT_A_PIN));
-  //   moveArmToRadius(targetArmPos, currentArmPosition);
-  //   k_PIDupdate.start();
-  // }
   
   targetArmPos = convertPotValToArmRadius(mozziAnalogRead<10>(POT_A_PIN));
   int16_t targetArmAngle = armRadiusToAngle(targetArmPos);
-  // moveArmToRadius(targetArmPos, currentArmPosition);
   moveArmToAngle(targetArmAngle, currentArmAngle);
 
 
-  // SERIAL_PRINTLN(currentArmPosition);
 
-  // now deal with controlling the table motion. Eventually I'm going to use the DC filter to watch the motion of the table.
-  // If the program expects it to be moving, but the DC filter shows that it has stopped, the program will stop the drive
-  // motor. Basically this will let you dynamically stop the table by grabbing it. If the table then moves again, the program
-  // will start the table motor up.  
+  // set the table speed based on the potentiometer position
   int16_t targetTableSpeed = convertPotValToTableSpeed(mozziAnalogRead<10>(POT_B_PIN));
   static int16_t savedTableSpeed = targetTableSpeed;
 
+  // the DC filter is pretty noisy, so adding some hysteresis helps clean up the data
   tableDC = (tableDC < -DCMovementThreshold || tableDC > DCMovementThreshold) ? tableDC : 0;    // add some hysteresis
-  // SERIAL_PRINT(tableDC);
 
+  // I feel like this block needs to be fixed. It triggers every time the timer is ready, which doesn't seem right.
+  // I think instead I should do something like
+  /**
+   * if (tableDC == 0 && timerNeedsToBeStarted == true) {start the timer and set timerNeedsToBeStarted = false};
+   * if (tableDC == 0 && timer is ready) {then react to the table DC};
+   * if (tableDC != 0 !timerNeedsToBeStarted) {timerNeedsToBeStarted = true;}
+   * 
+   * or something. basically on a falling edge of the DC filter (when it first goes to 0), start the timer. Only
+   * when the timer is already started and is ready and the DC is still 0 should the table stop spinning. And if the
+   * DC goes back to not 0 before the timer is ready, stop the timer (if that's an option) and watch for a new drop to 0.
+   */
   if (reactToDCTimer.ready()) {
     if (tableDC == 0) {
       savedTableSpeed = targetTableSpeed;
@@ -678,11 +565,8 @@ void updateControl() {
     } 
   }
 
-  // SERIAL_TAB;
-  // SERIAL_PRINTLN(targetTableSpeed);
 
   tableMotor.setSpeed(targetTableSpeed);
-  // tableMotor.setSpeed(targetTableSpeed);
 
 
   // AutoMap instances that handle the color data mapping to control signals
@@ -691,729 +575,13 @@ void updateControl() {
   mappedRed = autoRedToUINT8_T(scaledFixedColorData.redFixed.asInt());
   mappedWhite = autoWhiteToUINT8_T(scaledFixedColorData.clearFixed.asInt());
 
-  // oscil wash example sketch stuff
-  // v0 = mappedGreen;
-  // v1 = mappedBlue;
-  // v2 = mappedRed;
 
-
+  // call the function that will be used to convert color data to sound
   ambienceGenerator();
   // toneBeatsGenerator();
 
   previousEnableButton2Mode = enableButton2Mode;
-  // lastButtonMode = currentButtonMode;   // set this flag so we can detect transitions
-  
-  // v0 = 100;
-  // v1 = 0;
-  // v2 = 100;
-  
-
-  // // osc0.setFreq(mtof(snapToNearestNote((mappedBlue >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
-  // // osc1.setFreq(mtof(snapToNearestNote((mappedRed >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
-  // // osc2.setFreq(mtof(snapToNearestNote((mappedGreen >> 2) + 24, scaleNumbers_EbPentatonicMinor, numNotesInScale)));
-
-
-
-  // arpInterval = arpIntervalMap(mappedRed);    // this remaps the mapped red data into an interval for time between notes in arpeggio
-  
-  // if (!arpIntervalTimerStarted) {
-  //   arpIntervalTimer.set(arpInterval);
-  //   arpIntervalTimer.start();
-  //   arpIntervalTimerStarted = true;
-  // }
-
-
-  // // SERIAL_PRINT(mappedRed);
-  // // SERIAL_TAB;
-
-  // static uint8_t directIndex = 0;
-  // directIndex = min(mappedBlue >> 4, numNotesInScale - 1); // this takes the green color data and remaps it to a note value for the arp, and then makes sure it's in range
-  // SERIAL_PRINTLN(directIndex);
-  // static int16_t freq4 = 0, freq3 = 0, freq2 = 0;
-  // static uint8_t currentNote = 0;
-  // if (arpIntervalTimerStarted && arpIntervalTimer.ready()) {
-  //   currentNote = arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, true, directIndex, 0, 0, 0);
-  //   freq4 = mtof(currentNote);
-  //   if (useNoteOffset) {
-  //     freq2 = mtof(arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, true, directIndex - 3, -3, 1, 0));
-  //     noteOffsetInterval = arpInterval >> 1;
-  //     noteOffsetTimer.set(noteOffsetInterval);
-  //     noteOffsetTimer.start();
-  //     noteOffsetTimerStarted = true;
-  //     useNoteOffset = false;
-  //   }
-  //   if (useNoteOffset2) {
-  //     freq3 = mtof(arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, true, directIndex - 2, 5, 4, 0));
-  //     noteOffset2Interval = arpInterval;
-  //     noteOffset2Timer.set(noteOffset2Interval);
-  //     noteOffset2Timer.start();
-  //     noteOffset2TimerStarted = true;
-  //     useNoteOffset2 = false;
-  //   }
-  //   arpIntervalTimerStarted = false;
-  // }
-
-  
-  // if (noteOffsetTimerStarted == true && noteOffsetTimer.ready()) {
-  //   osc0.setFreq(freq2);
-  //   useNoteOffset = true;
-  //   noteOffsetTimerStarted = false;
-  // }
-
-  // if (noteOffset2TimerStarted == true && noteOffset2Timer.ready()) {
-  //   osc1.setFreq(freq3);
-  //   useNoteOffset2 = true;
-  //   noteOffset2TimerStarted = false;
-  // }
-
-  // osc2.setFreq(freq4);
-
-
-
 }
-
-
-
-/** 
- * mapping out what I want:
- * 
- * I think that I want to have it mostly be chords, with occasional bursts of arpeggios. So two oscillators always play long sustained notes to generate triads
- * or dyads. Then the third oscillator joins in either triads, or breaks into an arpeggio. I think that instead of having each note be selected from the scale based
- * on color value, I need to have color data select which chord is playing (with some probabilistic drift I think to keep it from repeating exactly). Osc0 will play
- * note0 from that chord, osc1 plays note1, and osc2 either plays note2, or else breaks into arp.
- * 
- * For arpeggiation, I think that the probability of arping should come from one of the color channels. So if there's a lot of red, an arp should be more likely,
- * but not guaranteed. The arpeggio should be notes from within a chord or two of the chosen progression. I can have the number of chords chosen be the spread of the arp,
- * and I could have those chosen randomly. Offset each new chord added to the arp by an octave to keep it distinct.
- * 
- * I can also have sound parameters driven by color value, but I want some randomnessa in that motion too. For example, I want to add amp envelopes to everything, but
- * I could have the ADSR partially modulated by color + randomness. 
- * 
- * 
- * Thinking I might drop into mixolydian mode
- *  key of D, so D mixolydian, diatonically from the scale
- *    I-v-ii-IV, so D, Am, Em, G
- *    
- *  chords in D mixolydian scale
- * degree       I         iim       iii         IV      v         vi        bVII
- * note         D         E         F#          G       A         B         C
- * chord        D         Em        F#dim       G       Am        Bm        C
- * chord note   D,F#,A    E,G,B     F#,A,C      G,B,D   A,C,E     B,D,F#    C,E,G
- * 
- 
-Chord D = {"D3", "F#3", "A3", " "}, Am = {"A3", "C4", "E4", " "}, Em = {"E3", "G3", "B3", " "}, G = {"G3", "B3", "D4", " "};
-Chord progression = {D, Am, Em, G};
-
-
- * Just listening to the earliest version of this that maps Green to the probability of moving to the next chord, I think
- * I should also set some chord progression variations. That way another color channel can select the probability of moving
- * from the main progression into one of the variations. Just right now the 4 chords get boring. 
- * 
- * General algorithm:
- *  - define the chords, the scale, and the chord progression as arrays
- *  - initialize the random seed
- *  - two possible paths here: 
- *      - have the color data map to the probability of moving to the next chord in the progression;
- *        - this would be something like: uint8_t nextChord = (rand(256) < mappedGreen) ? 1 : 0; where more green makes it more likely to switch to next chord
- *        - this also needs to have update times between chord changes. So maybe mappedRed determines the time between chord changes. Chord only changes when
- *            previous chord's time has elapsed.
- *      - or, have the color data directly select the chord in the progression, probably with some random noise to keep it interesting.
- *        - uint8_t chosenChord = map(mappedGreen, 0, 256, 0, 4);   // the amount of green directly chooses a chord in the progression
- *        - time between chords is again set by another color channel
- *  - in either of those two cases, set notes for the first 2 oscs based on the chosen chord, so osc0 plays note0, osc1 plays note1. 
- *      - could add some sauce where another color channel or just a constant random probability potentially increases/decreases the value of the note played by
- *        osc1 by an octave, just to build some inversions and keep it interesting
- *  - Osc3 is either the 3rd voice in the chord, or it breaks into arpeggio
- *      - bool arpeggiate = (rand(256) < mappedBlue) ? true : false;    // the more blue their is, the more likely arpeggiation is
- *      - if (!arpeggiate) {
- *          osc2 = note2 in chosen chord
- *        } else {
- *          - choose how many chords will go into the arpeggio, so maybe random between 1 and 3. or choose random number of notes from the D mixolydian scale.
- *            the randomness for either of these could be direct or color modulated
- *          - if we're going random chords route, take the notes from each chord and put them in the arp array as their constituent notes, adding 12 to the midi
- *          - value for the notes of each subsequent chord. or else just add the first n notes from the scale.
- *          - choose the baseline time interval between arp notes: baseInterval = rand(15, max(31, 256 - mappedRed));  // more red -> less time between notes
- *          - set a flag value to show arpeggio started: bool arping = true;
- *        }
- *  - if we are arpeggiating, call the arp function for each new note until we've used all of them in the array, the set arping = false;
- * 
- */
-
-
-// void toneBeatsGenerator() {
-//   // uint8_t note = snapToNearestNote(mappedGreen >> 1, scale_CLydianMIDI, numNotesInScale);
-//   uint8_t note = scale_CLydianMIDI[colorToScaleNote7(mappedGreen)];
-//   osc0Params.noteMIDINumber = note;
-//   osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
-//   osc0Params.volume = 140;
-//   osc0.setFreq(osc0Params.frequency);
-  
-//   osc2Params.noteMIDINumber = osc0Params.noteMIDINumber;
-//   osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
-//   osc2.setFreq((float)osc2Params.frequency + 0.4F);
-//   osc2Params.volume = 140;
-// }
-
-
-void toneBeatsGenerator() {
-
-}
-
-void ambienceGenerator() {
-  static int8_t arpIndex = 0;
-  static uint8_t numNotesLeftInArp = 0;
-  static bool initialize = true;
-  
-  static uint16_t osc0PortTime = 200, osc1PortTime = 200, osc2PortTime = 20;
-  
-  
-  const bool USE_PORTAMENTO = true;
-  
-  static uint16_t attack = 100, decay = 500, sustain = 8000, release = 3000;
-  
-  int8_t octaveShifter = (int8_t)(mappedWhite >> 6);
-  static bool arpeggiate = false, arpStarted = false, arpOnTimeOut = true;
-  
-  
-  // button mode 2 stuff
-  uint8_t newOs0Note = 0, newOsc1Note = 0, newOsc2Note = 0;
-  static uint8_t baseNoteInterval = 64;
-  // event delay for each osc
-  // thresholds for new notes and selected scales
-  SERIAL_PRINTLN(currentButtonMode);
-
-  if (!enableButton2Mode && previousEnableButton2Mode) initialize = true;  // transition out of button mode 2 requires resetting ADSRs
-
-  if (initialize) {
-    // scaleContainer.scaleSelector = 2;
-    currentScale = scaleContainer.scaleArray[scaleContainer.scaleSelector];
-    numNotesInScale = scaleContainer.numNotesInSelectedScale[scaleContainer.scaleSelector];
-    osc0AmpEnv.setADLevels(160, 140);
-    osc1AmpEnv.setADLevels(60, 50);
-    osc2AmpEnv.setADLevels(120, 110);
-    osc0AmpEnv.setTimes(attack, decay, sustain, release);
-    osc1AmpEnv.setTimes(attack, decay, sustain, release);
-    osc2AmpEnv.setTimes(attack, decay, sustain, release);
-    initialize = false;
-  }
-  
-  if (enableButton2Mode) {
-  
-    if (!previousEnableButton2Mode) {    // new isntance of button mode 2
-      // set all the ADSRs to be short and plucky
-      // build random chords by selecting one note from scale for each oscillator
-      // set up event delay for each note to be repeated, timing determined by color channel
-      osc0AmpEnv.setTimes(5, 50, 100, 200);
-      osc1AmpEnv.setTimes(5, 50, 100, 200);
-      osc1AmpEnv.setADLevels(60, 40);
-      osc2AmpEnv.setTimes(5, 50, 100, 200);
-
-
-      osc0ButtonMode2NoteTimer.set(max(1, mappedGreen >> 4) * baseNoteInterval);    // this will make all the notes play in interval steps of 32ms. quantize
-      osc0ButtonMode2NoteTimer.start();
-      osc1ButtonMode2NoteTimer.set(max(1, mappedGreen >> 4) * baseNoteInterval * 2);
-      osc1ButtonMode2NoteTimer.start();
-      osc2ButtonMode2NoteTimer.set(max(1, mappedGreen >> 4) * baseNoteInterval);
-      osc2ButtonMode2NoteTimer.start();
-    }
-
-    baseNoteInterval = (mappedWhite >> 5) * 16;
-
-    // check the event delay to see if the note for each voice is finished playing, then set up new notes if threshold met
-    if (osc0ButtonMode2NoteTimer.ready()) {
-      if (rand(256) < mappedRed) {
-        if (numNotesInScale == 7) {
-          osc0Params.noteMIDINumber = currentScale[colorToScaleNote7(mappedGreen)] + ((int8_t)rand(-1, 2) * 12);
-        } else {
-          osc0Params.noteMIDINumber = currentScale[colorToScaleNote5(mappedGreen)] + ((int8_t)rand(-1, 2) * 12);
-        } 
-      }
-      osc0AmpEnv.noteOn();
-      osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
-      osc0.setFreq(osc0Params.frequency);
-      osc0ButtonMode2NoteTimer.set(max(1, mappedGreen >> 4) * baseNoteInterval);
-      osc0ButtonMode2NoteTimer.start();
-    }
-    
-    if (osc1ButtonMode2NoteTimer.ready()) {
-      if (rand(256) < mappedGreen) {
-        if (numNotesInScale == 7) {
-          osc1Params.noteMIDINumber = currentScale[colorToScaleNote7(mappedBlue)] + ((int8_t)rand(-1, 2) * 12);
-        } else {
-          osc1Params.noteMIDINumber = currentScale[colorToScaleNote5(mappedBlue)] + ((int8_t)rand(-1, 2) * 12);
-        } 
-      }
-      osc1AmpEnv.noteOn();
-      osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
-      osc1.setFreq(osc1Params.frequency);
-      osc1ButtonMode2NoteTimer.set(max(1, mappedBlue >> 4) * baseNoteInterval * 2);
-      osc1ButtonMode2NoteTimer.start();
-    }
-
-    if (osc2ButtonMode2NoteTimer.ready()) {
-      if (rand(256) < mappedBlue) {
-        if (numNotesInScale == 7) {
-          osc2Params.noteMIDINumber = currentScale[colorToScaleNote7(mappedRed)] + ((int8_t)rand(-1, 2) * 12);
-        } else {
-          osc2Params.noteMIDINumber = currentScale[colorToScaleNote5(mappedRed)] + ((int8_t)rand(-1, 2) * 12);
-        } 
-      }
-      osc2AmpEnv.noteOn();
-      osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
-      osc2.setFreq(osc2Params.frequency);
-      osc2ButtonMode2NoteTimer.set(max(1, mappedRed >> 4) * baseNoteInterval);
-      osc2ButtonMode2NoteTimer.start();
-    }
-    
-    osc0AmpEnv.update();
-    osc1AmpEnv.update();
-    osc2AmpEnv.update();
-    osc0Params.volume = osc0AmpEnv.next();
-    osc1Params.volume = osc1AmpEnv.next();
-    osc2Params.volume = osc2AmpEnv.next();
-
-
-
-
-
-    // osc1Params.volume = osc2Params.volume = 0;
-
-  } else {
-
-    octaveShifter = max(-1, octaveShifter - 2); // should set octaveShifter to -1, 0, or 1 octaves added
-    // SERIAL_PRINTLN(octaveShifter);
-    // octaveShifter *= 12;  //make that actual midi note values by multiplying by 12 to get movement
-    
-    if (arpTimeout.ready()) {   // it's been long enough to allow an arpeggio again
-      arpOnTimeOut = false;
-    }
-    
-    if (octaveShifter > 0 && !arpOnTimeOut && !arpStarted) {   // arp is allowed again and triggered by enough white light
-      arpeggiate = (rand(256) <= mappedWhite) ? true : false;
-    }
-    
-    uint8_t i;
-    if (numNotesInScale == 7) {
-      i = colorToScaleNote7(mappedGreen);
-    } else {
-      i = colorToScaleNote5(mappedGreen);
-    }
-
-    osc0Params.noteMIDINumber = currentScale[i];
-    if (osc0Params.lastNoteMIDINumber != osc0Params.noteMIDINumber) {
-      osc0AmpEnv.noteOn();
-      osc0Params.lastNoteMIDINumber = osc0Params.noteMIDINumber;
-    }
-    
-    osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
-    osc0.setFreq((osc0Params.frequency));
-    osc0AmpEnv.update();
-    osc0Params.volume = osc0AmpEnv.next();
-    
-    
-    uint8_t j;
-    // osc1Params.noteMIDINumber = scale_CLydianMIDI[(i + 2 ) % numNotesInScale] + octaveShifter;
-    if (numNotesInScale == 7) {
-      j = colorToScaleNote7(mappedBlue);
-    } else {
-      j = colorToScaleNote5(mappedBlue);
-    }
-    switch (scaleContainer.scaleSelector) {
-      case 0:
-        osc1Params.noteMIDINumber = currentScale[(j + 4) % numNotesInScale] - 12;
-        break;
-      case 1: 
-        osc1Params.noteMIDINumber = currentScale[(i + 2) % numNotesInScale] + octaveShifter * 12;
-        break;
-      case 2:
-        osc1Params.noteMIDINumber = currentScale[j] - 12;
-        break;
-      default:
-        break;
-    }
-    
-    if (osc1Params.lastNoteMIDINumber != osc1Params.noteMIDINumber) {
-      osc1AmpEnv.noteOn();
-      osc1Params.lastNoteMIDINumber = osc1Params.noteMIDINumber;
-    }
-    
-    osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
-    osc1.setFreq(osc1Params.frequency);
-    osc1AmpEnv.update();
-    osc1Params.volume = osc1AmpEnv.next();
-
-
-    if (!arpeggiate) {
-          
-      // osc2Params.noteMIDINumber = scale_CLydianMIDI[k] + octaveShifter;
-      osc2Params.noteMIDINumber = currentScale[(i + 3) % numNotesInScale] + (octaveShifter * 12);     // pretty good
-      // osc2Params.noteMIDINumber = scale_CLydianMIDI[(i + 3) % numNotesInScale] - 7;
-      if (osc2Params.lastNoteMIDINumber != osc2Params.noteMIDINumber) {
-        osc2AmpEnv.noteOn();
-        osc2Params.lastNoteMIDINumber = osc2Params.noteMIDINumber;
-      }
-      
-      osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
-      osc2.setFreq(osc2Params.frequency);
-      osc2AmpEnv.update();
-      osc2Params.volume = osc2AmpEnv.next();
-
-    } else {
-      if (!arpStarted) {
-        // arpDurationTimer.set(max(250, mappedWhite << 3));
-        // arpDurationTimer.start();
-
-        numNotesLeftInArp = rand(4, 17);
-
-        arpStarted = true;
-        arpNoteTimer.set(min(mappedBlue, 192));
-        arpNoteTimer.start();
-        arpIndex = rand(numNotesInScale);
-        osc2AmpEnv.setTimes(5, 5, 100, 100);
-      }
-      if (arpNoteTimer.ready()) {
-        osc2Params.noteMIDINumber = currentScale[arpIndex] + (12 * (int8_t)rand(-1, 3));
-        osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
-        osc2Params.volume = 120;
-
-        osc2Portamento.setTime(osc2PortTime);
-        if (!USE_PORTAMENTO) osc2.setFreq(osc2Params.frequency);
-        
-        int8_t arpShift = rand(-5, 6);
-        arpIndex += arpShift;   // move to next note in sequence
-        // if (arpIndex < 0) {
-          //   arpIndex += numNotesInScale;
-          // } else if (arpIndex > numNotesInScale - 1) {
-            //   arpIndex -= numNotesInScale;
-            // }
-            arpIndex = (arpIndex < numNotesInScale && arpIndex >= 0) ? arpIndex : ((arpIndex < 0) ? arpIndex += numNotesInScale : arpIndex -= numNotesInScale);
-            arpNoteTimer.start();
-            numNotesLeftInArp -= 1;    // we have one fewer notes left in the arp
-          }
-          
-      if (USE_PORTAMENTO) {    
-        osc2Portamento.start(osc2Params.noteMIDINumber);
-        osc2.setFreq_Q16n16(osc2Portamento.next());
-      }
-
-      if (numNotesLeftInArp == 0) {
-        arpeggiate = false;
-        arpStarted = false;
-        arpTimeout.set(mappedGreen << 4);
-        arpTimeout.start();
-        arpOnTimeOut = true;
-        osc2AmpEnv.setTimes(attack, decay, sustain, release);
-      }
-      
-    }
-
-  }
-  // osc0Params.volume = 0;
-  // osc1Params.volume = 60;
-  // osc2Params.volume = 0;
-
-
-
-  // osc2Params.volume = 0;
-  
-  // static Chord currentChord = progression[1], lastChord = currentChord;
-  // uint8_t i = colorToScaleNote7(mappedRed);
-
-
-  // osc0Params.note = scale_CHarmonicMajor[i];
-  // osc0Params.noteMIDINumber = noteNameToMIDINote(osc0Params.note);
-  // osc0Params.frequency = mtof(osc0Params.noteMIDINumber + 12);
-  // osc0Params.volume = 180;
-
-  // osc0.setFreq(osc0Params.frequency);
-
-  // i = colorToScaleNote7(mappedGreen);
-  // osc1Params.note = scale_CHarmonicMajor[i];
-  // osc1Params.noteMIDINumber = noteNameToMIDINote(osc1Params.note);
-  // osc1Params.frequency = mtof(osc1Params.noteMIDINumber + 0);
-  // osc1Params.volume = 60;
-  // osc1.setFreq(osc1Params.frequency);
-
-  // i = colorToScaleNote7(mappedRed);
-  // i = (i + 3) % numNotesInScale;
-  // osc2Params.note = scale_CHarmonicMajor[i];
-  // osc1Params.noteMIDINumber = noteNameToMIDINote(osc2Params.note);
-  // osc1Params.frequency = mtof(osc2Params.noteMIDINumber + 24);
-  // osc2Params.volume = 120;
-  // osc2.setFreq(osc2Params.frequency);  
-
-
-  // if (osc0Params.lastNote != osc0Params.note) {
-  //   osc0Portamento.setTime(mappedGreen);
-  //   osc0Portamento.start(osc0Params.noteMIDINumber);
-  // }
-
-  // osc0.setFreq_Q16n16(osc0Portamento.next());
-
-  // if (mappedRed > mappedGreen) {
-  //   i = colorToScaleNote7(mappedGreen + ((mappedRed - mappedGreen) >> 1)); // this should get me something like the average between red and green
-  // } else if (mappedGreen > mappedRed) {
-  //   i = colorToScaleNote7(mappedGreen - ((mappedRed - mappedGreen) >> 1));
-  // } else {
-  //   i = colorToScaleNote7(mappedGreen);
-  // }
-  // osc1Params.note = scale_DMixolydian[i];
-  // osc1Params.noteMIDINumber = noteNameToMIDINote(osc1Params.note);
-  // osc1Params.frequency = mtof(osc1Params.noteMIDINumber -12);
-  // osc1Params.volume = 200;  
-  
-  
-  
-  // i = (i + 3) % numNotesInScale;
-  // osc1Params.note = scale_DMixolydian[i];
-  // osc1Params.noteMIDINumber = noteNameToMIDINote(osc1Params.note);
-  // osc1Params.frequency = mtof(osc1Params.noteMIDINumber -12);
-  // osc1Params.volume = 200;  
-  // osc1.setFreq(osc1Params.frequency);
-  
-  // if (osc1Params.lastNote != osc1Params.note) {
-  //   osc1Portamento.setTime(mappedBlue);
-  //   osc1Portamento.start(osc1Params.noteMIDINumber);
-  // }
-  // osc1.setFreq_Q16n16(osc1Portamento.next());
-
-  // i = colorToScaleNote7(mappedBlue);
-  // i = (i + 5) % numNotesInScale;
-  // osc2Params.note = scale_DMixolydian[i];
-  // osc2Params.noteMIDINumber = noteNameToMIDINote(osc2Params.note);
-  // osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
-  // osc2Params.volume = 0;
-  // osc2.setFreq(osc2Params.frequency);
-}
-
-
-//  version that finds closest reference color
-// void ambienceGenerator() {
-
-//   SERIAL_PRINT(mappedRed); SERIAL_TAB; SERIAL_PRINT(mappedGreen); SERIAL_TAB; SERIAL_PRINT(mappedBlue); SERIAL_TAB; SERIAL_PRINTLN(mappedWhite);
-//   // ReferenceColor closestColor = findClosestColor(mappedRed, mappedGreen, mappedBlue);
-//   // SERIAL_PRINTLN(closestColor.name);
-// }
-
-/*
-void ambienceGenerator() {
-  // parameter containers for three oscillators
-  static uint16_t arpInterval = 0;        // time between arp notes
-  bool arpeggiate = false;                // flag that indicates that we should arp
-  static bool arpInProgress = false, initialize = true, arpNoteStarted = false;
-  static Chord currentChord = progressionVar1[0], lastChord = currentChord;
-  static uint8_t chordIterator = 0, arpIterator = 0;
-  
-  if (initialize) {
-    chordTimer.set(500);
-    chordTimer.start();
-    initialize = false;
-  }
-  
-  if (chordTimer.ready()) {
-    uint8_t r = rand(256);
-    bool nextChord = (r < mappedGreen) ? true : false; // generate a random number, and if it's smaller than mappedGreen, move to the next chord
-    if (nextChord) {
-      chordIterator = (chordIterator + 1) % numChordsInProgression;
-    }
-    SERIAL_PRINT(r); SERIAL_TAB; SERIAL_PRINT(mappedGreen); SERIAL_TAB; SERIAL_PRINT(nextChord); SERIAL_TAB; SERIAL_PRINT(chordIterator);
-    
-    // chordIterator = (rand(256) < mappedGreen) ? chordIterator++ : chordIterator;
-    // chordIterator %= numChordsInProgression;
-    // currentChord = progression[mappedGreen >> 6];    // should shift this down from 0-255 to 0-3
-    currentChord = progressionVar1[chordIterator];
-    osc0Params.note = getNoteFromArpeggio(currentChord.notes, 4, 0);
-    osc0Params.noteMIDINumber = noteNameToMIDINote(osc0Params.note);
-    osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
-    osc0.setFreq(osc0Params.frequency);
-    osc0Params.volume = 200;
-    // SERIAL_PRINT(osc0Params.noteMIDINumber);
-    // SERIAL_TAB;
-    
-    osc1Params.noteMIDINumber = noteNameToMIDINote(osc1Params.note);
-    osc1Params.note = getNoteFromArpeggio(currentChord.notes, 4, 1);
-    osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
-    osc1.setFreq(osc1Params.frequency);
-    osc1Params.volume = 200;
-    // SERIAL_PRINT(osc1Params.noteMIDINumber);
-    // SERIAL_TAB;
-
-    arpeggiate = (rand(256) < mappedBlue) ? true : false; // if we cross the threshold, arpeggiate next time around
-    if (!arpeggiate) {  
-      osc2Params.note = getNoteFromArpeggio(currentChord.notes, 4, 2);
-      osc2Params.noteMIDINumber = noteNameToMIDINote(osc2Params.note);
-      osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
-      osc2.setFreq(osc2Params.frequency);
-      osc2Params.volume = 200;
-      // SERIAL_PRINTLN(osc2Params.noteMIDINumber);
-      chordTimer.start();
-    } else {
-      if (!arpInProgress) {
-        arpInProgress = true;
-        arpDurationTimer.set(4000);
-        arpDurationTimer.start();
-      } else {
-        if (arpDurationTimer.ready()) {
-          arpInProgress = false;
-          arpeggiate = false;       // reset to wait for new threshold
-        } else {
-          if (!arpNoteStarted) {
-            SERIAL_PRINTLN("hello");
-            arpNoteStarted = true;
-            arpNoteTimer.set(250);
-            arpNoteTimer.start();
-            osc2Params.note = getNoteFromArpeggio(scale_DMixolydian, numNotesInScale, arpIterator);
-            arpIterator = (arpIterator + 1) % numNotesInScale;
-            osc2Params.noteMIDINumber = noteNameToMIDINote(osc2Params.note);
-            osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
-            osc2Params.volume = 150;
-            osc2.setFreq(osc2Params.frequency);
-          } else {
-            if (arpNoteTimer.ready()) arpNoteStarted = false;
-          }
-        }
-      }
-    }
-    SERIAL_TAB; SERIAL_PRINT(arpeggiate); SERIAL_TAB; SERIAL_PRINTLN(arpIterator);
-  }
-  
-}
-
-*/
-
-
-/*
-void ambienceGenerator() {
-  // SERIAL_PRINTLN(arpInterval);
-  static uint8_t note0 = 0, note1 = 0, note2 = 0;
-  static float f0 = 0.0, f1 = 0.0, f2 = 0.0;
-  arpInterval = arpIntervalMap(mappedRed);
-  static bool osc1IntervalStarted = false, osc2IntervalStarted = false;
-
-  static uint8_t phaseI = 0;
-
-  // static uint16_t osc1OffsetInterval = mappedBlue, osc2OffsetInterval = mappedGreen;
-
-  if (!arpIntervalTimerStarted) {
-    arpIntervalTimer.set(arpInterval);
-    arpIntervalTimer.start();
-    arpIntervalTimerStarted = true;
-
-    // osc1OffsetInterval = (arpInterval - mappedBlue);
-    osc1OffsetInterval = (arpInterval > mappedBlue) ? (max(62, arpInterval - mappedBlue)) : 15; 
-    osc1OffsetTimer.set(osc1OffsetInterval);
-    if (!osc1IntervalStarted) {
-      osc1OffsetTimer.start();
-      osc1IntervalStarted = true;
-    }
-
-    osc2OffsetInterval = arpInterval >> 1;
-    osc2OffsetTimer.set(osc2OffsetInterval);
-    if (!osc2IntervalStarted) {
-      osc2OffsetTimer.start();
-      osc2IntervalStarted = true;
-    }
-  }
-
-  if (arpIntervalTimer.ready()) {
-    // get the note
-    note0 = 0 + arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, 0, 0, 0, 0);
-    // convert the MIDI note number to a frequency
-    f0 = mtof(note0);
-    // set the oscillator frequency
-    osc0.setFreq(f0);
-
-    // the arp was triggered, so reset this flag so we can restart the timer next loop
-    arpIntervalTimerStarted = false;
-  }
-  
-  if (osc1OffsetTimer.ready()) {
-    note1 = -12 + arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, 0, -2, 0, 0);
-    f1 = mtof(note1);
-    osc1.setFreq(f1);
-    osc1OffsetTimer.set(osc1OffsetInterval);
-    osc1OffsetTimer.start();
-  }
-  
-  if (osc2OffsetTimer.ready()) {
-    note2 = 0 + arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, 0, 5, 1, 0);
-    f2 = mtof(note2);
-    osc2.setFreq(f2);
-    osc2OffsetTimer.set(osc2OffsetInterval);
-    osc2OffsetTimer.start();
-  }
-  
-  // osc1.setPhase(0);    // mapped green is uint8_t, phase is uint_16t, doing this roughly expands mappedGreen into the appropriate range of values
-
-  v0 = 100;
-  v1 = 100;
-  v2 = 100;
-}
-
-*/
-
-/**
- * I just realized I've been trying to use the arpeggiator function like a class, where each oscillator can call to it independently and get a unique note back.
- * But that doesn't work, because the index is a static variable inside arpeggiator! So when I have one osc set to mode 0 (arp up), that increments the index
- * to return a higher note in the scale each time it's called. But if I have another osc set to mode 1 (arp down), this decrements the index to try to create a falling
- * arpeggio. These work fine on their own, but when both are active, they fight against each other over the index! This just made a kind of cool sound by accident that
- * I might keep, but the arpeggiator does actually need to be a class in the long term that isn't a singleton like this. Although that was fun.
- * 
- */
-
-
-
-
-
-
-
-/**
- * arpMode:
- * 0 - up loop
- * 1 - down loop
- * 2 - up-down-up loop
- * 3 - random
- * 4 - manual control of the note index
- * 
- * arpSpread: how many octaves to add to the span of the baseline scale. setting to 1 will expand 1 octave higher.
- * 
- * manualIndex: manually control which index in the array gets returned, instead of letting the automatic feature run. Value of
- * 255 means let automatic mode take over.
- * 
- * offset: signed number of steps up or down the scale to offset the output from the input, if direct input, or from the automatic progression
- */
-uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, uint8_t manualIndex = 255, int8_t offset = 0, uint8_t arpMode = 0, uint8_t arpSpread = 0) {
-  static uint8_t index = 0;
-  static uint8_t outputNote = 0;
-  index %= numNotesInScale;     // safety feature to prevent overflowing array
-
-
-  switch (arpMode) {
-    case 0:
-      outputNote = scaleNumbers[index];
-      ++index %= numNotesInScale;  // always wrap around at the end of the arpeggio
-      break;
-    case 1:
-      outputNote = scaleNumbers[index];
-      index = (index == 0) ? numNotesInScale - 1 : index - 1;
-      // --index;
-      // index %= numNotesInScale;
-      break;
-    case 2:
-      break;
-    case 3:
-      break;
-    case 4:
-      manualIndex = (manualIndex + offset) % numNotesInScale;
-      outputNote = scaleNumbers[manualIndex];
-    default:
-      break;
-  }
-
-  
-  return outputNote;
-}
-
 
 
 // **********************************************************************************
@@ -2092,4 +1260,486 @@ ReferenceColor findClosestColor(uint8_t redRaw, uint8_t greenRaw, uint8_t blue_r
     }
     
     return closestColor;
+}
+
+
+
+
+
+
+void toneBeatsGenerator() {
+
+}
+
+void ambienceGenerator() {
+  static int8_t arpIndex = 0;
+  static uint8_t numNotesLeftInArp = 0;
+  static bool initialize = true;
+  
+  static uint16_t osc0PortTime = 200, osc1PortTime = 200, osc2PortTime = 20;
+  
+  
+  const bool USE_PORTAMENTO = true;
+  
+  static uint16_t attack = 100, decay = 500, sustain = 8000, release = 3000;
+  
+  int8_t octaveShifter = (int8_t)(mappedWhite >> 6);
+  static bool arpeggiate = false, arpStarted = false, arpOnTimeOut = true;
+  
+  
+  // button mode 2 stuff
+  uint8_t newOs0Note = 0, newOsc1Note = 0, newOsc2Note = 0;
+  static uint8_t baseNoteInterval = 64;
+  // event delay for each osc
+  // thresholds for new notes and selected scales
+  SERIAL_PRINTLN(currentButtonMode);
+
+  if (!enableButton2Mode && previousEnableButton2Mode) initialize = true;  // transition out of button mode 2 requires resetting ADSRs
+
+  if (initialize) {
+    // scaleContainer.scaleSelector = 2;
+    currentScale = scaleContainer.scaleArray[scaleContainer.scaleSelector];
+    numNotesInScale = scaleContainer.numNotesInSelectedScale[scaleContainer.scaleSelector];
+    osc0AmpEnv.setADLevels(160, 140);
+    osc1AmpEnv.setADLevels(60, 50);
+    osc2AmpEnv.setADLevels(120, 110);
+    osc0AmpEnv.setTimes(attack, decay, sustain, release);
+    osc1AmpEnv.setTimes(attack, decay, sustain, release);
+    osc2AmpEnv.setTimes(attack, decay, sustain, release);
+    initialize = false;
+  }
+  
+  if (enableButton2Mode) {
+  
+    if (!previousEnableButton2Mode) {    // new isntance of button mode 2
+      // set all the ADSRs to be short and plucky
+      // build random chords by selecting one note from scale for each oscillator
+      // set up event delay for each note to be repeated, timing determined by color channel
+      osc0AmpEnv.setTimes(5, 50, 100, 200);
+      osc1AmpEnv.setTimes(5, 50, 100, 200);
+      osc1AmpEnv.setADLevels(60, 40);
+      osc2AmpEnv.setTimes(5, 50, 100, 200);
+
+
+      osc0ButtonMode2NoteTimer.set(max(1, mappedGreen >> 4) * baseNoteInterval);    // this will make all the notes play in interval steps of 32ms. quantize
+      osc0ButtonMode2NoteTimer.start();
+      osc1ButtonMode2NoteTimer.set(max(1, mappedGreen >> 4) * baseNoteInterval * 2);
+      osc1ButtonMode2NoteTimer.start();
+      osc2ButtonMode2NoteTimer.set(max(1, mappedGreen >> 4) * baseNoteInterval);
+      osc2ButtonMode2NoteTimer.start();
+    }
+
+    baseNoteInterval = (mappedWhite >> 5) * 16;
+
+    // check the event delay to see if the note for each voice is finished playing, then set up new notes if threshold met
+    if (osc0ButtonMode2NoteTimer.ready()) {
+      if (rand(256) < mappedRed) {
+        if (numNotesInScale == 7) {
+          osc0Params.noteMIDINumber = currentScale[colorToScaleNote7(mappedGreen)] + ((int8_t)rand(-1, 2) * 12);
+        } else {
+          osc0Params.noteMIDINumber = currentScale[colorToScaleNote5(mappedGreen)] + ((int8_t)rand(-1, 2) * 12);
+        } 
+      }
+      osc0AmpEnv.noteOn();
+      osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
+      osc0.setFreq(osc0Params.frequency);
+      osc0ButtonMode2NoteTimer.set(max(1, mappedGreen >> 4) * baseNoteInterval);
+      osc0ButtonMode2NoteTimer.start();
+    }
+    
+    if (osc1ButtonMode2NoteTimer.ready()) {
+      if (rand(256) < mappedGreen) {
+        if (numNotesInScale == 7) {
+          osc1Params.noteMIDINumber = currentScale[colorToScaleNote7(mappedBlue)] + ((int8_t)rand(-1, 2) * 12);
+        } else {
+          osc1Params.noteMIDINumber = currentScale[colorToScaleNote5(mappedBlue)] + ((int8_t)rand(-1, 2) * 12);
+        } 
+      }
+      osc1AmpEnv.noteOn();
+      osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
+      osc1.setFreq(osc1Params.frequency);
+      osc1ButtonMode2NoteTimer.set(max(1, mappedBlue >> 4) * baseNoteInterval * 2);
+      osc1ButtonMode2NoteTimer.start();
+    }
+
+    if (osc2ButtonMode2NoteTimer.ready()) {
+      if (rand(256) < mappedBlue) {
+        if (numNotesInScale == 7) {
+          osc2Params.noteMIDINumber = currentScale[colorToScaleNote7(mappedRed)] + ((int8_t)rand(-1, 2) * 12);
+        } else {
+          osc2Params.noteMIDINumber = currentScale[colorToScaleNote5(mappedRed)] + ((int8_t)rand(-1, 2) * 12);
+        } 
+      }
+      osc2AmpEnv.noteOn();
+      osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
+      osc2.setFreq(osc2Params.frequency);
+      osc2ButtonMode2NoteTimer.set(max(1, mappedRed >> 4) * baseNoteInterval);
+      osc2ButtonMode2NoteTimer.start();
+    }
+    
+    osc0AmpEnv.update();
+    osc1AmpEnv.update();
+    osc2AmpEnv.update();
+    osc0Params.volume = osc0AmpEnv.next();
+    osc1Params.volume = osc1AmpEnv.next();
+    osc2Params.volume = osc2AmpEnv.next();
+
+  } else {
+
+    octaveShifter = max(-1, octaveShifter - 2); // should set octaveShifter to -1, 0, or 1 octaves added
+    // SERIAL_PRINTLN(octaveShifter);
+    // octaveShifter *= 12;  //make that actual midi note values by multiplying by 12 to get movement
+    
+    if (arpTimeout.ready()) {   // it's been long enough to allow an arpeggio again
+      arpOnTimeOut = false;
+    }
+    
+    if (octaveShifter > 0 && !arpOnTimeOut && !arpStarted) {   // arp is allowed again and triggered by enough white light
+      arpeggiate = (rand(256) <= mappedWhite) ? true : false;
+    }
+    
+    uint8_t i;
+    if (numNotesInScale == 7) {
+      i = colorToScaleNote7(mappedGreen);
+    } else {
+      i = colorToScaleNote5(mappedGreen);
+    }
+
+    osc0Params.noteMIDINumber = currentScale[i];
+    if (osc0Params.lastNoteMIDINumber != osc0Params.noteMIDINumber) {
+      osc0AmpEnv.noteOn();
+      osc0Params.lastNoteMIDINumber = osc0Params.noteMIDINumber;
+    }
+    
+    osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
+    osc0.setFreq((osc0Params.frequency));
+    osc0AmpEnv.update();
+    osc0Params.volume = osc0AmpEnv.next();
+    
+    
+    uint8_t j;
+    // osc1Params.noteMIDINumber = scale_CLydianMIDI[(i + 2 ) % numNotesInScale] + octaveShifter;
+    if (numNotesInScale == 7) {
+      j = colorToScaleNote7(mappedBlue);
+    } else {
+      j = colorToScaleNote5(mappedBlue);
+    }
+    switch (scaleContainer.scaleSelector) {
+      case 0:
+        osc1Params.noteMIDINumber = currentScale[(j + 4) % numNotesInScale] - 12;
+        break;
+      case 1: 
+        osc1Params.noteMIDINumber = currentScale[(i + 2) % numNotesInScale] + octaveShifter * 12;
+        break;
+      case 2:
+        osc1Params.noteMIDINumber = currentScale[j] - 12;
+        break;
+      default:
+        break;
+    }
+    
+    if (osc1Params.lastNoteMIDINumber != osc1Params.noteMIDINumber) {
+      osc1AmpEnv.noteOn();
+      osc1Params.lastNoteMIDINumber = osc1Params.noteMIDINumber;
+    }
+    
+    osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
+    osc1.setFreq(osc1Params.frequency);
+    osc1AmpEnv.update();
+    osc1Params.volume = osc1AmpEnv.next();
+
+
+    if (!arpeggiate) {
+          
+      // osc2Params.noteMIDINumber = scale_CLydianMIDI[k] + octaveShifter;
+      osc2Params.noteMIDINumber = currentScale[(i + 3) % numNotesInScale] + (octaveShifter * 12);     // pretty good
+      // osc2Params.noteMIDINumber = scale_CLydianMIDI[(i + 3) % numNotesInScale] - 7;
+      if (osc2Params.lastNoteMIDINumber != osc2Params.noteMIDINumber) {
+        osc2AmpEnv.noteOn();
+        osc2Params.lastNoteMIDINumber = osc2Params.noteMIDINumber;
+      }
+      
+      osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
+      osc2.setFreq(osc2Params.frequency);
+      osc2AmpEnv.update();
+      osc2Params.volume = osc2AmpEnv.next();
+
+    } else {
+      if (!arpStarted) {
+        // arpDurationTimer.set(max(250, mappedWhite << 3));
+        // arpDurationTimer.start();
+
+        numNotesLeftInArp = rand(4, 17);
+
+        arpStarted = true;
+        arpNoteTimer.set(min(mappedBlue, 192));
+        arpNoteTimer.start();
+        arpIndex = rand(numNotesInScale);
+        osc2AmpEnv.setTimes(5, 5, 100, 100);
+      }
+      if (arpNoteTimer.ready()) {
+        osc2Params.noteMIDINumber = currentScale[arpIndex] + (12 * (int8_t)rand(-1, 3));
+        osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
+        osc2Params.volume = 120;
+
+        osc2Portamento.setTime(osc2PortTime);
+        if (!USE_PORTAMENTO) osc2.setFreq(osc2Params.frequency);
+        
+        int8_t arpShift = rand(-5, 6);
+        arpIndex += arpShift;   // move to next note in sequence
+        // if (arpIndex < 0) {
+          //   arpIndex += numNotesInScale;
+          // } else if (arpIndex > numNotesInScale - 1) {
+            //   arpIndex -= numNotesInScale;
+            // }
+            arpIndex = (arpIndex < numNotesInScale && arpIndex >= 0) ? arpIndex : ((arpIndex < 0) ? arpIndex += numNotesInScale : arpIndex -= numNotesInScale);
+            arpNoteTimer.start();
+            numNotesLeftInArp -= 1;    // we have one fewer notes left in the arp
+          }
+          
+      if (USE_PORTAMENTO) {    
+        osc2Portamento.start(osc2Params.noteMIDINumber);
+        osc2.setFreq_Q16n16(osc2Portamento.next());
+      }
+
+      if (numNotesLeftInArp == 0) {
+        arpeggiate = false;
+        arpStarted = false;
+        arpTimeout.set(mappedGreen << 4);
+        arpTimeout.start();
+        arpOnTimeOut = true;
+        osc2AmpEnv.setTimes(attack, decay, sustain, release);
+      }
+      
+    }
+
+  }
+}
+
+
+//  version that finds closest reference color
+// void ambienceGenerator() {
+
+//   SERIAL_PRINT(mappedRed); SERIAL_TAB; SERIAL_PRINT(mappedGreen); SERIAL_TAB; SERIAL_PRINT(mappedBlue); SERIAL_TAB; SERIAL_PRINTLN(mappedWhite);
+//   // ReferenceColor closestColor = findClosestColor(mappedRed, mappedGreen, mappedBlue);
+//   // SERIAL_PRINTLN(closestColor.name);
+// }
+
+/*
+void ambienceGenerator() {
+  // parameter containers for three oscillators
+  static uint16_t arpInterval = 0;        // time between arp notes
+  bool arpeggiate = false;                // flag that indicates that we should arp
+  static bool arpInProgress = false, initialize = true, arpNoteStarted = false;
+  static Chord currentChord = progressionVar1[0], lastChord = currentChord;
+  static uint8_t chordIterator = 0, arpIterator = 0;
+  
+  if (initialize) {
+    chordTimer.set(500);
+    chordTimer.start();
+    initialize = false;
+  }
+  
+  if (chordTimer.ready()) {
+    uint8_t r = rand(256);
+    bool nextChord = (r < mappedGreen) ? true : false; // generate a random number, and if it's smaller than mappedGreen, move to the next chord
+    if (nextChord) {
+      chordIterator = (chordIterator + 1) % numChordsInProgression;
+    }
+    SERIAL_PRINT(r); SERIAL_TAB; SERIAL_PRINT(mappedGreen); SERIAL_TAB; SERIAL_PRINT(nextChord); SERIAL_TAB; SERIAL_PRINT(chordIterator);
+    
+    // chordIterator = (rand(256) < mappedGreen) ? chordIterator++ : chordIterator;
+    // chordIterator %= numChordsInProgression;
+    // currentChord = progression[mappedGreen >> 6];    // should shift this down from 0-255 to 0-3
+    currentChord = progressionVar1[chordIterator];
+    osc0Params.note = getNoteFromArpeggio(currentChord.notes, 4, 0);
+    osc0Params.noteMIDINumber = noteNameToMIDINote(osc0Params.note);
+    osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
+    osc0.setFreq(osc0Params.frequency);
+    osc0Params.volume = 200;
+    // SERIAL_PRINT(osc0Params.noteMIDINumber);
+    // SERIAL_TAB;
+    
+    osc1Params.noteMIDINumber = noteNameToMIDINote(osc1Params.note);
+    osc1Params.note = getNoteFromArpeggio(currentChord.notes, 4, 1);
+    osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
+    osc1.setFreq(osc1Params.frequency);
+    osc1Params.volume = 200;
+    // SERIAL_PRINT(osc1Params.noteMIDINumber);
+    // SERIAL_TAB;
+
+    arpeggiate = (rand(256) < mappedBlue) ? true : false; // if we cross the threshold, arpeggiate next time around
+    if (!arpeggiate) {  
+      osc2Params.note = getNoteFromArpeggio(currentChord.notes, 4, 2);
+      osc2Params.noteMIDINumber = noteNameToMIDINote(osc2Params.note);
+      osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
+      osc2.setFreq(osc2Params.frequency);
+      osc2Params.volume = 200;
+      // SERIAL_PRINTLN(osc2Params.noteMIDINumber);
+      chordTimer.start();
+    } else {
+      if (!arpInProgress) {
+        arpInProgress = true;
+        arpDurationTimer.set(4000);
+        arpDurationTimer.start();
+      } else {
+        if (arpDurationTimer.ready()) {
+          arpInProgress = false;
+          arpeggiate = false;       // reset to wait for new threshold
+        } else {
+          if (!arpNoteStarted) {
+            SERIAL_PRINTLN("hello");
+            arpNoteStarted = true;
+            arpNoteTimer.set(250);
+            arpNoteTimer.start();
+            osc2Params.note = getNoteFromArpeggio(scale_DMixolydian, numNotesInScale, arpIterator);
+            arpIterator = (arpIterator + 1) % numNotesInScale;
+            osc2Params.noteMIDINumber = noteNameToMIDINote(osc2Params.note);
+            osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
+            osc2Params.volume = 150;
+            osc2.setFreq(osc2Params.frequency);
+          } else {
+            if (arpNoteTimer.ready()) arpNoteStarted = false;
+          }
+        }
+      }
+    }
+    SERIAL_TAB; SERIAL_PRINT(arpeggiate); SERIAL_TAB; SERIAL_PRINTLN(arpIterator);
+  }
+  
+}
+
+*/
+
+
+/*
+void ambienceGenerator() {
+  // SERIAL_PRINTLN(arpInterval);
+  static uint8_t note0 = 0, note1 = 0, note2 = 0;
+  static float f0 = 0.0, f1 = 0.0, f2 = 0.0;
+  arpInterval = arpIntervalMap(mappedRed);
+  static bool osc1IntervalStarted = false, osc2IntervalStarted = false;
+
+  static uint8_t phaseI = 0;
+
+  // static uint16_t osc1OffsetInterval = mappedBlue, osc2OffsetInterval = mappedGreen;
+
+  if (!arpIntervalTimerStarted) {
+    arpIntervalTimer.set(arpInterval);
+    arpIntervalTimer.start();
+    arpIntervalTimerStarted = true;
+
+    // osc1OffsetInterval = (arpInterval - mappedBlue);
+    osc1OffsetInterval = (arpInterval > mappedBlue) ? (max(62, arpInterval - mappedBlue)) : 15; 
+    osc1OffsetTimer.set(osc1OffsetInterval);
+    if (!osc1IntervalStarted) {
+      osc1OffsetTimer.start();
+      osc1IntervalStarted = true;
+    }
+
+    osc2OffsetInterval = arpInterval >> 1;
+    osc2OffsetTimer.set(osc2OffsetInterval);
+    if (!osc2IntervalStarted) {
+      osc2OffsetTimer.start();
+      osc2IntervalStarted = true;
+    }
+  }
+
+  if (arpIntervalTimer.ready()) {
+    // get the note
+    note0 = 0 + arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, 0, 0, 0, 0);
+    // convert the MIDI note number to a frequency
+    f0 = mtof(note0);
+    // set the oscillator frequency
+    osc0.setFreq(f0);
+
+    // the arp was triggered, so reset this flag so we can restart the timer next loop
+    arpIntervalTimerStarted = false;
+  }
+  
+  if (osc1OffsetTimer.ready()) {
+    note1 = -12 + arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, 0, -2, 0, 0);
+    f1 = mtof(note1);
+    osc1.setFreq(f1);
+    osc1OffsetTimer.set(osc1OffsetInterval);
+    osc1OffsetTimer.start();
+  }
+  
+  if (osc2OffsetTimer.ready()) {
+    note2 = 0 + arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, 0, 5, 1, 0);
+    f2 = mtof(note2);
+    osc2.setFreq(f2);
+    osc2OffsetTimer.set(osc2OffsetInterval);
+    osc2OffsetTimer.start();
+  }
+  
+  // osc1.setPhase(0);    // mapped green is uint8_t, phase is uint_16t, doing this roughly expands mappedGreen into the appropriate range of values
+
+  v0 = 100;
+  v1 = 100;
+  v2 = 100;
+}
+
+*/
+
+
+
+
+
+
+
+/**
+ * I just realized I've been trying to use the arpeggiator function like a class, where each oscillator can call to it independently and get a unique note back.
+ * But that doesn't work, because the index is a static variable inside arpeggiator! So when I have one osc set to mode 0 (arp up), that increments the index
+ * to return a higher note in the scale each time it's called. But if I have another osc set to mode 1 (arp down), this decrements the index to try to create a falling
+ * arpeggio. These work fine on their own, but when both are active, they fight against each other over the index! This just made a kind of cool sound by accident that
+ * I might keep, but the arpeggiator does actually need to be a class in the long term that isn't a singleton like this. Although that was fun.
+ * 
+ */
+
+/**
+ * arpMode:
+ * 0 - up loop
+ * 1 - down loop
+ * 2 - up-down-up loop
+ * 3 - random
+ * 4 - manual control of the note index
+ * 
+ * arpSpread: how many octaves to add to the span of the baseline scale. setting to 1 will expand 1 octave higher.
+ * 
+ * manualIndex: manually control which index in the array gets returned, instead of letting the automatic feature run. Value of
+ * 255 means let automatic mode take over.
+ * 
+ * offset: signed number of steps up or down the scale to offset the output from the input, if direct input, or from the automatic progression
+ */
+uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, uint8_t manualIndex = 255, int8_t offset = 0, uint8_t arpMode = 0, uint8_t arpSpread = 0) {
+  static uint8_t index = 0;
+  static uint8_t outputNote = 0;
+  index %= numNotesInScale;     // safety feature to prevent overflowing array
+
+
+  switch (arpMode) {
+    case 0:
+      outputNote = scaleNumbers[index];
+      ++index %= numNotesInScale;  // always wrap around at the end of the arpeggio
+      break;
+    case 1:
+      outputNote = scaleNumbers[index];
+      index = (index == 0) ? numNotesInScale - 1 : index - 1;
+      // --index;
+      // index %= numNotesInScale;
+      break;
+    case 2:
+      break;
+    case 3:
+      break;
+    case 4:
+      manualIndex = (manualIndex + offset) % numNotesInScale;
+      outputNote = scaleNumbers[manualIndex];
+    default:
+      break;
+  }
+
+  
+  return outputNote;
 }
