@@ -393,21 +393,6 @@ const char* MIDINoteToNoteName(uint8_t note);     // convert MIDI note to note n
 
 
 uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t* scaleNumbers, uint8_t manualIndex, int8_t offset, uint8_t arpMode, uint8_t arpSpread);
-/*
-EventDelay arpIntervalTimer, osc1OffsetTimer, osc2OffsetTimer;
-bool arpIntervalTimerStarted = false;
-uint16_t arpInterval = 125, osc1OffsetInterval = 125, osc2OffsetInterval = 125;
-constexpr uint16_t arpMinInterval = 7, arpMaxInterval = 1000;
-const IntMap arpIntervalMap(0, 255, arpMaxInterval, arpMinInterval); // reversed so that more red == faster arpeggio
-// const IntMap arpColorToNote(0, 16, 0, numNotesInScale);
-EventDelay noteOffsetTimer;
-bool noteOffsetTimerStarted = false, useNoteOffset = true;
-uint8_t noteOffsetInterval = 125;
-
-EventDelay noteOffset2Timer;
-bool noteOffset2TimerStarted = false, useNoteOffset2 = true;
-uint8_t noteOffset2Interval = 125;
-*/
 
 EventDelay chordTimer, arpDurationTimer, arpNoteTimer, arpTimeout;
 
@@ -489,6 +474,15 @@ void setup()
    * conversion time are interdependent, so it's difficult to know what time and resolution you are going to get
    * by the value you set the byte to. Open CLS16D24.h, and at the bottom you will find a large comment that shows
    * all possible values for conversion time and resolution.
+   * 
+   * The default value of 0x02 yields these results:
+   * COMMAND	CLS_CONV	INT_TIME	Calculated Resolution (maximum possible value)	Calculated Resolution (in bits)	    Calculated Conversion Time (in milliseconds)
+   * 0x02	    0	        2	        16383	                                          14	                                36.8942
+   * 
+   * I chose this as a good general setting because it offers a lot of color resolution (exactly 14 bits worth) and a reasonable conversion time of about 37ms.
+   * It might actually make more sense thought to use 0x00, because that reduces resolution to 10 bits, but also drops conversion time to 5.89ms.
+   * I'm pretty much always squashing the values to even lower resolution later in the code, so dropping to a lower resolution straight from the sensor could be
+   * a good thing to try out.
   */
   RGBCIR.setResolutionAndConversionTime(0x02);
   SERIAL_PRINT("Conversion time: ");
