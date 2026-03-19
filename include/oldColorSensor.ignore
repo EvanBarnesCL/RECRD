@@ -50,28 +50,10 @@ struct FixedPointColorValues
 // struct for storing the color data as fixed point values after they have been white balance corrected (after scaleColorDataFixedPoint() is applied to the raw colorData)
 FixedPointColorValues scaledFixedColorData;
 
-// where color data that has been mapped into control signals will be stored
-uint8_t mappedGreen = 0, mappedBlue = 0, mappedRed = 0, mappedWhite = 0;
-
-// delay timer for updating sensor data. When the sensor data is getting updated, the processor can't simultaneously update the sound it's generating.
-// You can update the sensor more frequently, but that might negatively impact sound generation. This also updates all three sensors simultaneously,
-// and it might work better to update each of them at staggered intervals.
-EventDelay k_i2cUpdateDelay;
 
 
-// constants and variables relating to the LEDs on the arm that illuminate the table
-constexpr uint8_t NUM_BRIGHTNESS_LEVELS = 5;
-uint8_t brightnessIterator = 3; // default to brightness level 3 on startup
-constexpr uint16_t LEDBrightnessSequence = 0b1000011000100001;
 
-// This function generates the sequence 0, 31, 63, 191, 255 to correspond to 5 PWM values for LED dimming. To
-// understand how it works, see the section [[#how LED brightness PWM values are calculated]] in Footnotes.md
-inline uint8_t getBrightness(uint8_t level = 3)
-{
-    return static_cast<uint8_t>(
-        (level == 0) ? 0 : ((((LEDBrightnessSequence >> (4 * (level - 1))) & 0xF) << 5) - 1)
-    );
-}
+
 
 
 // function prototypes

@@ -21,6 +21,13 @@
 
 
 
+
+// delay timer for updating sensor data. When the sensor data is getting updated, the processor can't simultaneously update the sound it's generating.
+// You can update the sensor more frequently, but that might negatively impact sound generation. This also updates all three sensors simultaneously,
+// and it might work better to update each of them at staggered intervals.
+EventDelay k_i2cUpdateDelay;
+
+
 // **********************************************************************************
 // Arm and Table stuff
 // **********************************************************************************
@@ -34,6 +41,25 @@
 // **********************************************************************************
 
 #include <ColorSensor.h>
+ColorSensor colorSensor;
+
+// where color data that has been mapped into control signals will be stored
+uint8_t mappedGreen = 0, mappedBlue = 0, mappedRed = 0, mappedWhite = 0;
+
+// constants and variables relating to the LEDs on the arm that illuminate the table
+  constexpr uint8_t NUM_BRIGHTNESS_LEVELS = 5;
+  uint8_t brightnessIterator = 3; // default to brightness level 3 on startup
+  constexpr uint16_t LEDBrightnessSequence = 0b1000011000100001;
+
+  // This function generates the sequence 0, 31, 63, 191, 255 to correspond to 5 PWM values for LED dimming. To
+  // understand how it works, see the section [[#how LED brightness PWM values are calculated]] in Footnotes.md
+  inline uint8_t getBrightness(uint8_t level = 3)
+  {
+      return static_cast<uint8_t>(
+          (level == 0) ? 0 : ((((LEDBrightnessSequence >> (4 * (level - 1))) & 0xF) << 5) - 1)
+      );
+  }
+
 
 // **********************************************************************************
 // Potentiometers and buttons
@@ -142,22 +168,28 @@ void setup()
 
   currentArmPosition = armAngleToRadius(armEncoder.getCumulativePosition());
 
-  if (!RGBCIR.begin(false))
-  { // set parameter to true to use i2c fast mode (400kHz instead of 100kHz)
-    SERIAL_PRINTLN("ERROR: couldn't detect the sensor");
-    while (1)
-    {
-    }
-  }
+  colorSensor.begin(false);
+  // if (!RGBCIR.begin(false))
+  // { // set parameter to true to use i2c fast mode (400kHz instead of 100kHz)
+  //   SERIAL_PRINTLN("ERROR: couldn't detect the sensor");
+  //   while (1)
+  //   {
+  //   }
+  // }
   // IMPORTANT: Set the I2C clock to 400kHz fast mode AFTER initializing the connection to the sensors.
   // Need to use fastest I2C possible to minimize latency for Mozzi.
   Wire.setClock(400000);
 
+  
   // Configure the color sensor.
-  RGBCIR.reset();
-  RGBCIR.enable();
+  // RGBCIR.reset();
+  // RGBCIR.enable();
+  colorSensor.reset();
+  colorSensor.enable();
+
   // possible gain settings are 1, 4, 8, 32, 96. setting the second parameter to true doubles the diode sensing area, which increases sensitivity
-  RGBCIR.setGain(32, false);
+  // RGBCIR.setGain(32, false);
+  colorSensor.setGain(32, false);
   /**
    * Both the total time it takes to convert a color reading into values and the resolution of that data are set
    * by the value of a single byte, which you can set with setResolutionAndConversionTime(). The resolution and
@@ -174,11 +206,14 @@ void setup()
    * I'm pretty much always squashing the values to even lower resolution later in the code, so dropping to a lower resolution straight from the sensor could be
    * a good thing to try out.
    */
-  RGBCIR.setResolutionAndConversionTime(0x02);
+  // RGBCIR.setResolutionAndConversionTime(0x02);
+  colorSensor.setResolutionAndConversionTime(0x02);
   SERIAL_PRINT("Conversion time: ");
-  SERIAL_PRINTLN(RGBCIR.getConversionTimeMillis()); // Calculates the conversion time determined by setResolutionAndConversionTime()
+  // SERIAL_PRINTLN(RGBCIR.getConversionTimeMillis()); // Calculates the conversion time determined by setResolutionAndConversionTime()
+  SERIAL_PRINTLN(colorSensor.getConversionTimeMillis());
   SERIAL_PRINT("Resolution: ");
-  SERIAL_PRINTLN(RGBCIR.getResolution()); // Calculates resolution determined by setResolutionAndConversionTime()
+  // SERIAL_PRINTLN(RGBCIR.getResolution()); // Calculates resolution determined by setResolutionAndConversionTime()
+  SERIAL_PRINTLN(colorSensor.getResolution());
 
   // Define which color channels to update here. Set to true to enable that color channel.
   // This is a bit of an artifact from using the VEML3328 color sensor, instead of the CLS-16D24 that I'm using now.
@@ -188,11 +223,17 @@ void setup()
   // as well, and it could potentially be useful for enabling or disabling the effects of color channels on the synth.
   // However, this is probably too complex. The CLS-16D24 updates all 5 channels simultaneously and much more rapidly, so I'll
   // probably just remove this feature eventually.
-  updateChannels[static_cast<int>(ColorChannels::RED)] = true;
-  updateChannels[static_cast<int>(ColorChannels::GREEN)] = true;
-  updateChannels[static_cast<int>(ColorChannels::BLUE)] = true;
-  updateChannels[static_cast<int>(ColorChannels::CLEAR)] = true;
-  updateChannels[static_cast<int>(ColorChannels::IR)] = true;
+  // updateChannels[static_cast<int>(ColorChannels::RED)] = true;
+  // updateChannels[static_cast<int>(ColorChannels::GREEN)] = true;
+  // updateChannels[static_cast<int>(ColorChannels::BLUE)] = true;
+  // updateChannels[static_cast<int>(ColorChannels::CLEAR)] = true;
+  // updateChannels[static_cast<int>(ColorChannels::IR)] = true;
+
+  colorSensor.setChannelEnabled(ColorChannels::RED, true);
+  colorSensor.setChannelEnabled(ColorChannels::GREEN, true);
+  colorSensor.setChannelEnabled(ColorChannels::BLUE, true);
+  colorSensor.setChannelEnabled(ColorChannels::CLEAR, true);
+  colorSensor.setChannelEnabled(ColorChannels::IR, true);
 
   if (USE_FAST_PWM)
   {
@@ -268,10 +309,10 @@ void updateControl()
   // The reason these are static variables inside updateControl() instead of being global is that I wanted to use the RGBCIR.getResolution() function
   // to be able to set the size of the mapping, rather than hardcoding the value. That way the maps get dynamically resized based on the chosen
   // resolution of the sensor.
-  static AutoMap autoGreenToUINT8_T(0, RGBCIR.getResolution(), 0, 255);
-  static AutoMap autoBlueToUINT8_T(0, RGBCIR.getResolution(), 0, 255);
-  static AutoMap autoRedToUINT8_T(0, RGBCIR.getResolution(), 0, 255);
-  static AutoMap autoWhiteToUINT8_T(0, RGBCIR.getResolution(), 0, 255);
+  static AutoMap autoGreenToUINT8_T(0, colorSensor.getResolution(), 0, 255);
+  static AutoMap autoBlueToUINT8_T(0, colorSensor.getResolution(), 0, 255);
+  static AutoMap autoRedToUINT8_T(0, colorSensor.getResolution(), 0, 255);
+  static AutoMap autoWhiteToUINT8_T(0, colorSensor.getResolution(), 0, 255);
 
   // check to see if buttons are pressed. returns 0, 1, 2, 255
   // 0 = B1, 1 = B2, 2 = B3, 255 = no press
@@ -373,10 +414,11 @@ void updateControl()
       currentSensorToUpdate++;
       break;
     case 2: // update the color sensor
-      updateColorReadings(&colorData);
+      // updateColorReadings(&colorData);
       // scaleColorData(&colorData);       // scale the blue and red channels to bring them in line with green channel (essential white balance correction)
-      scaleColorDataFixedPoint(&colorData, &scaledFixedColorData);
+      // scaleColorDataFixedPoint(&colorData, &scaledFixedColorData);
       // printColorData();
+      colorSensor.update();
       currentSensorToUpdate = 0;
       lastTableAngle = currentTableAngle;
       break;
@@ -395,10 +437,10 @@ void updateControl()
   tableMotor.setSpeed(targetTableSpeed);
 
   // AutoMap instances that handle the color data mapping to control signals. These bring the values all the way down to uint8_t.
-  mappedGreen = autoGreenToUINT8_T(scaledFixedColorData.greenFixed.asInt());
-  mappedBlue = autoBlueToUINT8_T(scaledFixedColorData.blueFixed.asInt());
-  mappedRed = autoRedToUINT8_T(scaledFixedColorData.redFixed.asInt());
-  mappedWhite = autoWhiteToUINT8_T(scaledFixedColorData.clearFixed.asInt());
+  mappedGreen = autoGreenToUINT8_T(colorSensor.getGreenFixed().asInt());
+  mappedBlue = autoBlueToUINT8_T(colorSensor.getBlueFixed().asInt());
+  mappedRed = autoRedToUINT8_T(colorSensor.getRedFixed().asInt());
+  mappedWhite = autoWhiteToUINT8_T(colorSensor.getClearFixed().asInt());
 
   // call the function that will be used to convert color data to sound
   ambienceGenerator();
