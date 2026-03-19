@@ -209,45 +209,121 @@ Oscil<TRIANGLE_VALVE_2_2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc2(TRIANGLE_VALVE_2_2
 using MIDI_NOTE = uint8_t; // just for readability elsewhere, I'm creating an alias called MIDI_NOTE that is just uint8_t datatype.
 
 // an array of 4 pointers to const char* strings that define up to four notes in a chord
-struct Chord
-{
-  const char *notes[4];
+// struct Chord
+// {
+//   const char *notes[4];
+// };
+
+
+struct Chord {
+    const uint8_t* notes;   // pointer to PROGMEM array
+    uint8_t numNotes;
+
+    uint8_t getNote(uint8_t index) const {
+        if (index >= numNotes) return 255;
+        return pgm_read_byte(&notes[index]);
+    }
 };
+
+// function prototypes
+//
+//original
+// uint8_t noteNameToMIDINote(const char *noteName); // convert note names to MIDI note numbers (e.g., F#2 -> 42)
+
+// new test
+constexpr uint8_t noteNameToMIDINote(const char* noteName);
+
+const char *MIDINoteToNoteName(uint8_t note);     // convert MIDI note to note name (e.g., 42 -> F#2)
+void convertArray_NoteNumbersToNames(const uint8_t midiNotes[], uint8_t numNotes, const char *noteNames[]);   // this converts whole arrays, which I think I can actually avoid
+void convertArray_NoteNamesToNumbers(const char *noteNames[], uint8_t numNotes, uint8_t midiNotes[]);
+uint8_t snapToNearestNote(uint8_t inputValue, const uint8_t notes[], uint8_t numNotes);
+void setFreqsFromChord(const Chord &chord, UFix<12, 15> &f1, UFix<12, 15> &f2, UFix<12, 15> &f3, UFix<12, 15> &f4);
+const char *getNoteFromArpeggio(const char *notes[], uint8_t numNotes, uint8_t selector);
+uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t *scaleNumbers, uint8_t manualIndex, int8_t offset, uint8_t arpMode, uint8_t arpSpread);
+void ambienceGenerator(); // right now i just want to wrap all the sound control stuff in a function so I can easily separate it out from the rest of updateControl()
+void toneBeatsGenerator();
+
+#define DEFINE_CHORD(name, ...)                                         \
+    const uint8_t name##_data[] PROGMEM = {__VA_ARGS__};               \
+    const Chord name = {name##_data, sizeof(name##_data)}
+
+#define N(s) noteNameToMIDINote(s)
+
+DEFINE_CHORD(scale_CPentatonicMajor, N("C3"), N("D3"), N("E3"), N("G3"), N("A3"));
+
+DEFINE_CHORD(scale_CHarmonicMajor, N("C3"), N("D3"), N("E3"), N("F3"), N("G3"), N("G#3"), N("B3"));
+
+DEFINE_CHORD(scale_EbPentatonicMinorMIDI, N("D#3"), N("F#3"), N("G#3"), N("A#3"), N("C#4"));
+
+constexpr MIDI_NOTE root_CLydianScale = 48; // MIDI note number for C3
+DEFINE_CHORD(scale_CLydian, root_CLydianScale, root_CLydianScale + 2, root_CLydianScale + 4, root_CLydianScale + 6, root_CLydianScale + 7, root_CLydianScale + 9, root_CLydianScale + 11);
+
+
 
 // C#maj Pentatonic
-const MIDI_NOTE scale_CPentatonicMajor[5] = {48, 50, 52, 55, 57};
+// const MIDI_NOTE scale_CPentatonicMajor[5] = {48, 50, 52, 55, 57};
+// Chord<5> scale_CPentatonicMajor((const char*){"C3", "D3", "E3", "G3", "A3"});
+
 
 // C harmonic major scale
-const char *scale_CHarmonicMajor[] = {"C3", "D3", "E3", "F3", "G3", "G#3", "B3"};
-const MIDI_NOTE scale_CHarmMajorMIDI[7] = {48, 50, 52, 53, 55, 56, 59};
+// const char *scale_CHarmonicMajor[] = {"C3", "D3", "E3", "F3", "G3", "G#3", "B3"};
+// const MIDI_NOTE scale_CHarmMajorMIDI[7] = {48, 50, 52, 53, 55, 56, 59};
 
 // Eb pentatonic minor scale
-const char *scale_EbPentatonicMinor[5] = {"D#3", "F#3", "G#3", "A#3", "C#4"};
-MIDI_NOTE scale_EbPentatonicMinorMIDI[5] = {51, 54, 56, 58, 61};
+// const char *scale_EbPentatonicMinor[5] = {"D#3", "F#3", "G#3", "A#3", "C#4"};
+// MIDI_NOTE scale_EbPentatonicMinorMIDI[5] = {51, 54, 56, 58, 61};
 
 // C Lydian scale
-constexpr MIDI_NOTE root_CLydianScale = 48; // MIDI note number for C3
-const MIDI_NOTE scale_CLydianMIDI[7] = {root_CLydianScale, root_CLydianScale + 2, root_CLydianScale + 4, root_CLydianScale + 6, root_CLydianScale + 7, root_CLydianScale + 9, root_CLydianScale + 11};
+// constexpr MIDI_NOTE root_CLydianScale = 48; // MIDI note number for C3
+// const MIDI_NOTE scale_CLydianMIDI[7] = {root_CLydianScale, root_CLydianScale + 2, root_CLydianScale + 4, root_CLydianScale + 6, root_CLydianScale + 7, root_CLydianScale + 9, root_CLydianScale + 11};
 
 // number of scales we'll be storing in the container
-constexpr uint8_t NUM_SCALES = 3;
+// constexpr uint8_t NUM_SCALES = 3;
 
-// array for storing the scales and another array for storing the associated note numbers
-struct scaleStorage
-{
-  const uint8_t numScales = 3;
-  uint8_t scaleSelector = 0;
-  const MIDI_NOTE *scaleArray[NUM_SCALES] = {scale_EbPentatonicMinorMIDI, scale_CLydianMIDI, scale_CPentatonicMajor};
-  const uint8_t numNotesInSelectedScale[3] = { // this calculates number of notes in each scale
-      sizeof(scale_EbPentatonicMinorMIDI) / sizeof(scale_EbPentatonicMinorMIDI[0]),
-      sizeof(scale_CLydianMIDI) / sizeof(scale_CLydianMIDI[0]),
-      sizeof(scale_CPentatonicMajor) / sizeof(scale_CPentatonicMajor[0])};
+// // array for storing the scales and another array for storing the associated note numbers
+// struct scaleStorage
+// {
+//   const uint8_t numScales = 3;
+//   uint8_t scaleSelector = 0;
+//   const MIDI_NOTE *scaleArray[NUM_SCALES] = {scale_EbPentatonicMinorMIDI, scale_CLydianMIDI, scale_CPentatonicMajor};
+//   const uint8_t numNotesInSelectedScale[3] = { // this calculates number of notes in each scale
+//       sizeof(scale_EbPentatonicMinorMIDI) / sizeof(scale_EbPentatonicMinorMIDI[0]),
+//       sizeof(scale_CLydianMIDI) / sizeof(scale_CLydianMIDI[0]),
+//       sizeof(scale_CPentatonicMajor) / sizeof(scale_CPentatonicMajor[0])};
+// };
+
+// scaleStorage scaleContainer;
+
+// const MIDI_NOTE *currentScale = scaleContainer.scaleArray[scaleContainer.scaleSelector];
+// uint8_t numNotesInScale = scaleContainer.numNotesInSelectedScale[scaleContainer.scaleSelector];
+
+
+constexpr uint8_t NUM_SCALES = 4;
+
+struct ScaleStorage {
+    const Chord* scales[NUM_SCALES];
+    uint8_t scaleSelector;
+
+    const Chord& selected() const {
+        return *scales[scaleSelector];
+    }
+
+    void nextScale() {
+        scaleSelector = (scaleSelector + 1) % NUM_SCALES;
+    }
+
+    void prevScale() {
+        scaleSelector = (scaleSelector == 0) ? NUM_SCALES - 1 : scaleSelector - 1;
+    }
 };
 
-scaleStorage scaleContainer;
+ScaleStorage myScales = {
+    {&scale_CPentatonicMajor, &scale_CHarmonicMajor, &scale_EbPentatonicMinorMIDI, &scale_CLydian},
+    0
+};
 
-const MIDI_NOTE *currentScale = scaleContainer.scaleArray[scaleContainer.scaleSelector];
-uint8_t numNotesInScale = scaleContainer.numNotesInSelectedScale[scaleContainer.scaleSelector];
+
+
 
 // struct for storing parameters for each oscillator
 struct oscillatorParams
@@ -291,17 +367,7 @@ const IntMap colorToScaleNote5(0, 255, 0, 5);
 bool enableButton2Mode = false, previousEnableButton2Mode = false;
 uint8_t lastButtonMode = 0, currentButtonMode = 0;
 
-// function prototypes
-void convertArray_NoteNumbersToNames(const uint8_t midiNotes[], uint8_t numNotes, const char *noteNames[]);
-void convertArray_NoteNamesToNumbers(const char *noteNames[], uint8_t numNotes, uint8_t midiNotes[]);
-uint8_t snapToNearestNote(uint8_t inputValue, const uint8_t notes[], uint8_t numNotes);
-void setFreqsFromChord(const Chord &chord, UFix<12, 15> &f1, UFix<12, 15> &f2, UFix<12, 15> &f3, UFix<12, 15> &f4);
-const char *getNoteFromArpeggio(const char *notes[], uint8_t numNotes, uint8_t selector);
-uint8_t noteNameToMIDINote(const char *noteName); // convert note names to MIDI note numbers (e.g., F#2 -> 42)
-const char *MIDINoteToNoteName(uint8_t note);     // convert MIDI note to note name (e.g., 42 -> F#2)
-uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t *scaleNumbers, uint8_t manualIndex, int8_t offset, uint8_t arpMode, uint8_t arpSpread);
-void ambienceGenerator(); // right now i just want to wrap all the sound control stuff in a function so I can easily separate it out from the rest of updateControl()
-void toneBeatsGenerator();
+
 
 // **********************************************************************************
 // Setup
@@ -831,6 +897,48 @@ void printColorData()
   SERIAL_PRINTLN();
 }
 
+
+constexpr uint8_t noteNameToMIDINote(const char* noteName)
+{
+    constexpr uint8_t OCTAVE = 12;
+    int8_t noteBaseIndex = -1;
+    int8_t octaveNumber = 0;
+
+    if (noteName[1] == '#') {
+        switch (noteName[0]) {
+            case 'C': noteBaseIndex = 1;  break;
+            case 'D': noteBaseIndex = 3;  break;
+            case 'F': noteBaseIndex = 6;  break;
+            case 'G': noteBaseIndex = 8;  break;
+            case 'A': noteBaseIndex = 10; break;
+            default:  return 255;
+        }
+        if (noteName[2] == '-')
+            octaveNumber = -(noteName[3] - '0');
+        else
+            octaveNumber = noteName[2] - '0';
+    } else {
+        switch (noteName[0]) {
+            case 'C': noteBaseIndex = 0;  break;
+            case 'D': noteBaseIndex = 2;  break;
+            case 'E': noteBaseIndex = 4;  break;
+            case 'F': noteBaseIndex = 5;  break;
+            case 'G': noteBaseIndex = 7;  break;
+            case 'A': noteBaseIndex = 9;  break;
+            case 'B': noteBaseIndex = 11; break;
+            default:  return 255;
+        }
+        if (noteName[1] == '-')
+            octaveNumber = -(noteName[2] - '0');
+        else
+            octaveNumber = noteName[1] - '0';
+    }
+
+    return (octaveNumber + 1) * OCTAVE + noteBaseIndex;
+}
+
+
+/*
 // this returns the MIDI note number for any note from C-1 to G9 (MIDI notes 0 through 127).
 // Pass the note name as a string into the parameter. E.g., "D#-1" returns 3, or "F#2" returns 42.
 uint8_t noteNameToMIDINote(const char *noteName)
@@ -896,6 +1004,7 @@ uint8_t noteNameToMIDINote(const char *noteName)
   // Calculate the MIDI note number
   return (octaveNumber + 1) * OCTAVE + noteBaseIndex;
 }
+*/
 
 // Converts a MIDI note number into a string (const char*) note name. E.g., 42 -> F#2
 const char *MIDINoteToNoteName(uint8_t note)
@@ -914,7 +1023,7 @@ const char *MIDINoteToNoteName(uint8_t note)
   uint8_t noteIndex = note % 12;
 
   // Allocate a static buffer to store the note string
-  static char noteStr[5]; // Max length: "A#-1" + null terminator = 5 bytes
+  static char noteStr[6]; // Max length: "A#-1" + null terminator = 5 bytes
   snprintf(noteStr, sizeof(noteStr), "%s%d", noteNames[noteIndex], octave);
 
   return noteStr;
