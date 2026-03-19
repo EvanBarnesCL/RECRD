@@ -32,7 +32,6 @@
 #include <Wire.h>
 #include <FixMath.h>
 #include <CLS16D24.h>
-#include <Configuration.h>
 
 // ---------------------------------------------------------------------------
 // Supporting types — defined at file scope so main.cpp can reference them
