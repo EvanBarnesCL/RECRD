@@ -4,6 +4,12 @@
 #include <Configuration.h>
 #include <FixMath.h>
 #include <EventDelay.h>
+#include <CLS16D24.h>
+
+
+// instantiate the object that will manage the color sensor
+CLS16D24 RGBCIR;
+
 
 bool updateChannels[5] = {false, false, false, false, false}; // Flags to control which channels to update. defaults to all five off.
 
@@ -51,7 +57,7 @@ uint8_t mappedGreen = 0, mappedBlue = 0, mappedRed = 0, mappedWhite = 0;
 // You can update the sensor more frequently, but that might negatively impact sound generation. This also updates all three sensors simultaneously,
 // and it might work better to update each of them at staggered intervals.
 EventDelay k_i2cUpdateDelay;
-constexpr uint8_t I2C_UPDATE_INTERVAL = 15; // time in milliseconds
+
 
 // constants and variables relating to the LEDs on the arm that illuminate the table
 constexpr uint8_t NUM_BRIGHTNESS_LEVELS = 5;
@@ -104,66 +110,70 @@ void printColorData()
 
   if (updateChannels[static_cast<int>(ColorChannels::BLUE)])
   {
-    if (!first)
+    if (!first) {
       SERIAL_PRINT("   ");
-    else
+    } else {
       first = false;
-    // SERIAL_PRINT("Blue:");
-    channels.b = true;
-    // SERIAL_PRINT(colorData.blue);
-    // SERIAL_PRINT(scaledFixedColorData.blueFixed.asInt());
-    SERIAL_PRINT(mappedBlue);
+      // SERIAL_PRINT("Blue:");
+      channels.b = true;
+      // SERIAL_PRINT(colorData.blue);
+      // SERIAL_PRINT(scaledFixedColorData.blueFixed.asInt());
+      SERIAL_PRINT(mappedBlue);
+    }
   }
 
   if (updateChannels[static_cast<int>(ColorChannels::CLEAR)])
   {
-    if (!first)
+    if (!first) {
       SERIAL_PRINT("   ");
-    else
+    } else {
       first = false;
-    // SERIAL_PRINT("Clear:");
-    channels.c = true;
-    // SERIAL_PRINT(colorData.clear);
-    SERIAL_PRINT(scaledFixedColorData.clearFixed.asInt());
+      // SERIAL_PRINT("Clear:");
+      channels.c = true;
+      // SERIAL_PRINT(colorData.clear);
+      SERIAL_PRINT(scaledFixedColorData.clearFixed.asInt());
+    }
   }
 
   if (updateChannels[static_cast<int>(ColorChannels::IR)])
   {
-    if (!first)
+    if (!first) {
       SERIAL_PRINT("   ");
-    else
+    } else {
       first = false;
     // SERIAL_PRINT("IR:");
     channels.ir = true;
     // SERIAL_PRINT(colorData.IR);
     SERIAL_PRINT(scaledFixedColorData.IRFixed.asInt());
-  }
+    }
+  } 
 
   if (updateChannels[static_cast<int>(ColorChannels::GREEN)])
   {
-    if (!first)
+    if (!first) {
       SERIAL_PRINT("   ");
-    else
+    } else {
       first = false;
-    // SERIAL_PRINT("Green:");
-    channels.g = true;
-    // SERIAL_PRINT(colorData.green);
-    // SERIAL_PRINT(scaledFixedColorData.greenFixed.asInt());
-    SERIAL_PRINT(mappedGreen);
+      // SERIAL_PRINT("Green:");
+      channels.g = true;
+      // SERIAL_PRINT(colorData.green);
+      // SERIAL_PRINT(scaledFixedColorData.greenFixed.asInt());
+      SERIAL_PRINT(mappedGreen);
+    }
   }
   if (updateChannels[static_cast<int>(ColorChannels::RED)])
   {
-    if (!first)
+    if (!first) {
       SERIAL_PRINT("   ");
-    else
+    } else {
       first = false;
-    // SERIAL_PRINT("Red:");
-    channels.r = true;
-    // SERIAL_PRINT(colorData.red);
-    // SERIAL_PRINT(scaledFixedColorData.redFixed.asInt());
-    SERIAL_PRINT(mappedRed);
+      // SERIAL_PRINT("Red:");
+      channels.r = true;
+      // SERIAL_PRINT(colorData.red);
+      // SERIAL_PRINT(scaledFixedColorData.redFixed.asInt());
+      SERIAL_PRINT(mappedRed);
+    } 
   }
-
   // SERIAL_PRINT("  "); SERIAL_PRINT(v0);
 
   SERIAL_PRINTLN();

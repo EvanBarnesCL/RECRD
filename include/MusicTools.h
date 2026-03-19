@@ -30,7 +30,7 @@ struct Chord {
 // uint8_t noteNameToMIDINote(const char *noteName); // convert note names to MIDI note numbers (e.g., F#2 -> 42)
 
 // new test
-constexpr uint8_t noteNameToMIDINote(const char* noteName);
+
 
 const char *MIDINoteToNoteName(uint8_t note);     // convert MIDI note to note name (e.g., 42 -> F#2)
 void convertArray_NoteNumbersToNames(const uint8_t midiNotes[], uint8_t numNotes, const char *noteNames[]);   // this converts whole arrays, which I think I can actually avoid
@@ -42,20 +42,9 @@ uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t *scaleNumbers, uint8_
 void ambienceGenerator(); // right now i just want to wrap all the sound control stuff in a function so I can easily separate it out from the rest of updateControl()
 void toneBeatsGenerator();
 
-#define DEFINE_CHORD(name, ...)                                         \
-    const uint8_t name##_data[] PROGMEM = {__VA_ARGS__};               \
-    const Chord name = {name##_data, sizeof(name##_data)}
 
-#define N(s) noteNameToMIDINote(s)
 
-DEFINE_CHORD(scale_CPentatonicMajor, N("C3"), N("D3"), N("E3"), N("G3"), N("A3"));
 
-DEFINE_CHORD(scale_CHarmonicMajor, N("C3"), N("D3"), N("E3"), N("F3"), N("G3"), N("G#3"), N("B3"));
-
-DEFINE_CHORD(scale_EbPentatonicMinorMIDI, N("D#3"), N("F#3"), N("G#3"), N("A#3"), N("C#4"));
-
-constexpr MIDI_NOTE root_CLydianScale = 48; // MIDI note number for C3
-DEFINE_CHORD(scale_CLydian, root_CLydianScale, root_CLydianScale + 2, root_CLydianScale + 4, root_CLydianScale + 6, root_CLydianScale + 7, root_CLydianScale + 9, root_CLydianScale + 11);
 
 
 
@@ -126,12 +115,9 @@ struct ScaleStorage
   }
 };
 
-ScaleStorage scaleContainer = {
-    {&scale_CPentatonicMajor, &scale_CHarmonicMajor, &scale_EbPentatonicMinorMIDI, &scale_CLydian},
-    0
-};
 
-Chord currentScale = scaleContainer.selected();
+
+
 // uint8_t numNotesInScale = scaleContainer.selected().numNotes;
 
 /*
@@ -146,7 +132,70 @@ myScales.nextScale();
 */
 
 
+constexpr uint8_t noteNameToMIDINote(const char* noteName);
 
+constexpr uint8_t noteNameToMIDINote(const char* noteName)
+{
+    constexpr uint8_t OCTAVE = 12;
+    int8_t noteBaseIndex = -1;
+    int8_t octaveNumber = 0;
+
+    if (noteName[1] == '#') {
+        switch (noteName[0]) {
+            case 'C': noteBaseIndex = 1;  break;
+            case 'D': noteBaseIndex = 3;  break;
+            case 'F': noteBaseIndex = 6;  break;
+            case 'G': noteBaseIndex = 8;  break;
+            case 'A': noteBaseIndex = 10; break;
+            default:  return 255;
+        }
+        if (noteName[2] == '-')
+            octaveNumber = -(noteName[3] - '0');
+        else
+            octaveNumber = noteName[2] - '0';
+    } else {
+        switch (noteName[0]) {
+            case 'C': noteBaseIndex = 0;  break;
+            case 'D': noteBaseIndex = 2;  break;
+            case 'E': noteBaseIndex = 4;  break;
+            case 'F': noteBaseIndex = 5;  break;
+            case 'G': noteBaseIndex = 7;  break;
+            case 'A': noteBaseIndex = 9;  break;
+            case 'B': noteBaseIndex = 11; break;
+            default:  return 255;
+        }
+        if (noteName[1] == '-')
+            octaveNumber = -(noteName[2] - '0');
+        else
+            octaveNumber = noteName[1] - '0';
+    }
+
+    return (octaveNumber + 1) * OCTAVE + noteBaseIndex;
+}
+
+#define DEFINE_CHORD(name, ...)                                         \
+    constexpr uint8_t name##_data[] PROGMEM = {__VA_ARGS__};               \
+    constexpr Chord name = {name##_data, sizeof(name##_data)}
+
+#define N(s) noteNameToMIDINote(s)
+
+DEFINE_CHORD(scale_CPentatonicMajor, N("C3"), N("D3"), N("E3"), N("G3"), N("A3"));
+
+DEFINE_CHORD(scale_CHarmonicMajor, N("C3"), N("D3"), N("E3"), N("F3"), N("G3"), N("G#3"), N("B3"));
+
+DEFINE_CHORD(scale_EbPentatonicMinorMIDI, N("D#3"), N("F#3"), N("G#3"), N("A#3"), N("C#4"));
+
+constexpr MIDI_NOTE root_CLydianScale = 48; // MIDI note number for C3
+DEFINE_CHORD(scale_CLydian, root_CLydianScale, root_CLydianScale + 2, root_CLydianScale + 4, root_CLydianScale + 6, root_CLydianScale + 7, root_CLydianScale + 9, root_CLydianScale + 11);
+
+
+ScaleStorage scaleContainer = {
+    {&scale_CPentatonicMajor, &scale_CHarmonicMajor, &scale_EbPentatonicMinorMIDI, &scale_CLydian},
+    0
+};
+
+
+Chord currentScale = scaleContainer.selected();
 
 
 

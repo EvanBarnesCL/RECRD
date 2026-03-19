@@ -247,3 +247,177 @@ ReferenceColor findClosestColor(uint8_t redRaw, uint8_t greenRaw, uint8_t blue_r
 
   return closestColor;
 }
+
+
+
+
+
+
+
+
+
+
+
+//  version that finds closest reference color
+// void ambienceGenerator() {
+
+//   SERIAL_PRINT(mappedRed); SERIAL_TAB; SERIAL_PRINT(mappedGreen); SERIAL_TAB; SERIAL_PRINT(mappedBlue); SERIAL_TAB; SERIAL_PRINTLN(mappedWhite);
+//   // ReferenceColor closestColor = findClosestColor(mappedRed, mappedGreen, mappedBlue);
+//   // SERIAL_PRINTLN(closestColor.name);
+// }
+
+/*
+void ambienceGenerator() {
+  // parameter containers for three oscillators
+  static uint16_t arpInterval = 0;        // time between arp notes
+  bool arpeggiate = false;                // flag that indicates that we should arp
+  static bool arpInProgress = false, initialize = true, arpNoteStarted = false;
+  static Chord currentChord = progressionVar1[0], lastChord = currentChord;
+  static uint8_t chordIterator = 0, arpIterator = 0;
+
+  if (initialize) {
+    chordTimer.set(500);
+    chordTimer.start();
+    initialize = false;
+  }
+
+  if (chordTimer.ready()) {
+    uint8_t r = rand(256);
+    bool nextChord = (r < mappedGreen) ? true : false; // generate a random number, and if it's smaller than mappedGreen, move to the next chord
+    if (nextChord) {
+      chordIterator = (chordIterator + 1) % numChordsInProgression;
+    }
+    SERIAL_PRINT(r); SERIAL_TAB; SERIAL_PRINT(mappedGreen); SERIAL_TAB; SERIAL_PRINT(nextChord); SERIAL_TAB; SERIAL_PRINT(chordIterator);
+
+    // chordIterator = (rand(256) < mappedGreen) ? chordIterator++ : chordIterator;
+    // chordIterator %= numChordsInProgression;
+    // currentChord = progression[mappedGreen >> 6];    // should shift this down from 0-255 to 0-3
+    currentChord = progressionVar1[chordIterator];
+    osc0Params.note = getNoteFromArpeggio(currentChord.notes, 4, 0);
+    osc0Params.noteMIDINumber = noteNameToMIDINote(osc0Params.note);
+    osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
+    osc0.setFreq(osc0Params.frequency);
+    osc0Params.volume = 200;
+    // SERIAL_PRINT(osc0Params.noteMIDINumber);
+    // SERIAL_TAB;
+
+    osc1Params.noteMIDINumber = noteNameToMIDINote(osc1Params.note);
+    osc1Params.note = getNoteFromArpeggio(currentChord.notes, 4, 1);
+    osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
+    osc1.setFreq(osc1Params.frequency);
+    osc1Params.volume = 200;
+    // SERIAL_PRINT(osc1Params.noteMIDINumber);
+    // SERIAL_TAB;
+
+    arpeggiate = (rand(256) < mappedBlue) ? true : false; // if we cross the threshold, arpeggiate next time around
+    if (!arpeggiate) {
+      osc2Params.note = getNoteFromArpeggio(currentChord.notes, 4, 2);
+      osc2Params.noteMIDINumber = noteNameToMIDINote(osc2Params.note);
+      osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
+      osc2.setFreq(osc2Params.frequency);
+      osc2Params.volume = 200;
+      // SERIAL_PRINTLN(osc2Params.noteMIDINumber);
+      chordTimer.start();
+    } else {
+      if (!arpInProgress) {
+        arpInProgress = true;
+        arpDurationTimer.set(4000);
+        arpDurationTimer.start();
+      } else {
+        if (arpDurationTimer.ready()) {
+          arpInProgress = false;
+          arpeggiate = false;       // reset to wait for new threshold
+        } else {
+          if (!arpNoteStarted) {
+            SERIAL_PRINTLN("hello");
+            arpNoteStarted = true;
+            arpNoteTimer.set(250);
+            arpNoteTimer.start();
+            osc2Params.note = getNoteFromArpeggio(scale_DMixolydian, numNotesInScale, arpIterator);
+            arpIterator = (arpIterator + 1) % numNotesInScale;
+            osc2Params.noteMIDINumber = noteNameToMIDINote(osc2Params.note);
+            osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
+            osc2Params.volume = 150;
+            osc2.setFreq(osc2Params.frequency);
+          } else {
+            if (arpNoteTimer.ready()) arpNoteStarted = false;
+          }
+        }
+      }
+    }
+    SERIAL_TAB; SERIAL_PRINT(arpeggiate); SERIAL_TAB; SERIAL_PRINTLN(arpIterator);
+  }
+
+}
+
+*/
+
+/*
+void ambienceGenerator() {
+  // SERIAL_PRINTLN(arpInterval);
+  static uint8_t note0 = 0, note1 = 0, note2 = 0;
+  static float f0 = 0.0, f1 = 0.0, f2 = 0.0;
+  arpInterval = arpIntervalMap(mappedRed);
+  static bool osc1IntervalStarted = false, osc2IntervalStarted = false;
+
+  static uint8_t phaseI = 0;
+
+  // static uint16_t osc1OffsetInterval = mappedBlue, osc2OffsetInterval = mappedGreen;
+
+  if (!arpIntervalTimerStarted) {
+    arpIntervalTimer.set(arpInterval);
+    arpIntervalTimer.start();
+    arpIntervalTimerStarted = true;
+
+    // osc1OffsetInterval = (arpInterval - mappedBlue);
+    osc1OffsetInterval = (arpInterval > mappedBlue) ? (max(62, arpInterval - mappedBlue)) : 15;
+    osc1OffsetTimer.set(osc1OffsetInterval);
+    if (!osc1IntervalStarted) {
+      osc1OffsetTimer.start();
+      osc1IntervalStarted = true;
+    }
+
+    osc2OffsetInterval = arpInterval >> 1;
+    osc2OffsetTimer.set(osc2OffsetInterval);
+    if (!osc2IntervalStarted) {
+      osc2OffsetTimer.start();
+      osc2IntervalStarted = true;
+    }
+  }
+
+  if (arpIntervalTimer.ready()) {
+    // get the note
+    note0 = 0 + arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, 0, 0, 0, 0);
+    // convert the MIDI note number to a frequency
+    f0 = mtof(note0);
+    // set the oscillator frequency
+    osc0.setFreq(f0);
+
+    // the arp was triggered, so reset this flag so we can restart the timer next loop
+    arpIntervalTimerStarted = false;
+  }
+
+  if (osc1OffsetTimer.ready()) {
+    note1 = -12 + arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, 0, -2, 0, 0);
+    f1 = mtof(note1);
+    osc1.setFreq(f1);
+    osc1OffsetTimer.set(osc1OffsetInterval);
+    osc1OffsetTimer.start();
+  }
+
+  if (osc2OffsetTimer.ready()) {
+    note2 = 0 + arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, 0, 5, 1, 0);
+    f2 = mtof(note2);
+    osc2.setFreq(f2);
+    osc2OffsetTimer.set(osc2OffsetInterval);
+    osc2OffsetTimer.start();
+  }
+
+  // osc1.setPhase(0);    // mapped green is uint8_t, phase is uint_16t, doing this roughly expands mappedGreen into the appropriate range of values
+
+  v0 = 100;
+  v1 = 100;
+  v2 = 100;
+}
+
+*/

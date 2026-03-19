@@ -25,48 +25,15 @@
 // Arm and Table stuff
 // **********************************************************************************
 
-// pin assignments
-constexpr uint8_t TABLE_SPEED_PIN = 5,
-                  TABLE_DIR_PIN = 4,
-                  ARM_SPEED_PIN = 6,
-                  ARM_DIR_PIN = 7,
-                  LED_PIN = 11;
+#include <mechanisms.h>
 
 
-// motor objects
-DRV8835 tableMotor(TABLE_SPEED_PIN, TABLE_DIR_PIN, 50, true);
-DRV8835 armMotor(ARM_SPEED_PIN, ARM_DIR_PIN, 50, true);
-
-// encoder objects
-AS5600L tableEncoder;
-AS5600 armEncoder;
-
-// constants and variables related to the arm
-constexpr uint8_t MAX_CONSTRAINED_RADIUS = 75; // the maximum absolute value radius the arm will be allowed to move to during normal operation
-int8_t currentArmPosition = 0;                 // current arm position in millimeters from center of table
-int16_t currentArmAngle = 0;
-
-// constants and variables related to the table
-int32_t currentTableAngle = 0, lastTableAngle = 0;
-
-// function prototypes
-void homeArm();
-int16_t armRadiusToAngle(int16_t radiusMM);    // convert arm radius in millimeters to angle in encoder counts
-int16_t armAngleToRadius(int16_t angleCounts); // convert arm angle in encoder counts to radius in millimeters
-int16_t convertPotValToArmRadius(uint16_t potVal);
-int16_t convertPotValToTableSpeed(int16_t potVal);
-void moveArmToRadius(int8_t targetRadius, int16_t currentAngle);
-void moveArmToAngle(int16_t targetAngle, int16_t currentAngle);
 
 // **********************************************************************************
 // Color sensor stuff
 // **********************************************************************************
 
 #include <ColorSensor.h>
-// instantiate the object that will manage the color sensor
-CLS16D24 RGBCIR;
-
-
 
 // **********************************************************************************
 // Potentiometers and buttons
@@ -101,8 +68,6 @@ Oscil<TRIANGLE_VALVE_2_2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc2(TRIANGLE_VALVE_2_2
 // **********************************************************************************
 
 #include <MusicTools.h>
-
-
 
 
 // struct for storing parameters for each oscillator
@@ -252,12 +217,12 @@ void setup()
     digitalWrite(LED_PIN, HIGH); // just turn the color sensor LEDs on at full brightness
   }
 
-  // set harmonic frequencies
+  // set the initial frequencies of the oscillators
   osc0.setFreq(mtof(noteNameToMIDINote("E2")));
   osc1.setFreq(mtof(noteNameToMIDINote("A3")));
   osc2.setFreq(mtof(noteNameToMIDINote("B4")));
 
-  // finally, start the timers
+  // start the timer that triggers sensor updates
   k_i2cUpdateDelay.set(I2C_UPDATE_INTERVAL); // control how frequently we poll the sensors on the I2C bus (color sensor, both encoders)
 
   // amplitude envelope settings for the oscillators (attack and decay -> basically fade in and fade out for each triggered note)
@@ -272,6 +237,8 @@ void setup()
 // **********************************************************************************
 // updateControl for Mozzi
 // **********************************************************************************
+
+// #include <UpdateControl.h>
 
 void updateControl()
 {
@@ -470,239 +437,7 @@ void loop()
 // Function Definitions
 // **********************************************************************************
 
-// this version of the homing sequence relies on standard timing functions. This only works because
-// homeArm() is called before the PWM clock divisors get changed and before Mozzi gets started.
-void homeArm()
-{
-  static int16_t lastPos = 0, currentPos = 100; // arbitrary values that need to start different from each other
-  armMotor.setSpeed(255);
-  delay(100); // delay for a brief period to take up gear backlash
-  // just keep spinning the motor until the arm stops moving
-  while (currentPos != lastPos)
-  {
-    lastPos = currentPos;
-    currentPos = armEncoder.getCumulativePosition(); // read current position
-    delay(100);                                      // basically a short debouncing window.
-  }
-  // arm is homed, stop the motor.
-  armMotor.setSpeed(0);
 
-  // shift the angle around so that 0 angle is directly over center of table
-  armEncoder.resetCumulativePosition(661);
-}
-
-/**
- * @brief converts an arm radius (from center of table in millimeters) to the angle in encoder counts that the arm needs to be at to reach that radius.
- *
- * @param radiusMM the radius in millimeters
- *
- * @return the angle in encoder counts that corresponds to the input radius
- *
- * @paragraph The angle is defined from the line that connects the center of the table and the center of the arm gear. As the angle
- * gets more positive, the arm moves toward its vertical position. Negative angles move the other side of the center
- * line, bringing the sensor arm down toward the knobs and buttons.
- *
- * This function is an approximation, but a pretty good one. At worst, it will have an error of 1 degree. The actual function that
- * precisely converts radius to angle in encoder counts (4096 per revolution) is:
- *
- * angle = (4096 / pi) * arcsin(radiusMM / 216)
- *
- * This radius is actually the chord length of the arc described by the sensor arm, starting from the point where that arc is
- * coincident with the table. The above function is derived from the formula for chord length. It's nice because it's exact, but it's
- * terrible for use in this context because it has floating point numbers (pi) and trig functions (arcsine). The ATMega328P is
- * extremely slow at performing floating point operations and trigonometric functions. It only has hardware for adding, subtracting,
- * and multiplying integers, as well as hardware for performing bitwise operations directly on binary numbers, so if you need any
- * other math operation, it gets built from those basic operations repeated a bunch of times, making it really slow. In situations
- * like this, where we need as much processing power as possible for running Mozzi, it's worth trying to find good linear approximations
- * of the actual math function that only use those basic operations. The approximation I derived is:
- *
- * angle = (774 * radiusMM) >> 7;
- *
- * That's equivalent to (774 * radiusMM) / 128. The denominator of 128 is nice because that's 2^7, so instead of performing the slow
- * operation of dividing by 128, we can perform the extremely fast operation of bitshifting right by 7 places.
- *
- * One final note on this is that bit shift operations are not valid on signed integers (those that can contain negative values).
- * You can perform the operation and move the bits, but it won't yield the mathematical results you expect. That's because one of the
- * bits is the sign bits, and tells the processor if the number is negative or not. Performing a bit shift moves that sign bit and messes
- * up the math. So the function implementation takes the absolute value of the radius parameter and puts that in an unsigned integer
- * so that bit shifting will work. At some point it could be interesting to test various versions of this to see which is fastest.
- * Shifting by powers of 2 is faster than shifting by other numbers, so there's a chance that doing something like the following could be
- * faster than what I have now:
- *
- * return ((774 * absRadius) >> 8) << 1;
- *
- * Or maybe just forgo the intermediate step of using absolute value and unsigned integers, and just divide the signed radius value by 128.
- *
- * If you want you can see a spreadsheet that I made to help figure all this out. It's not particularly well organized, and it's missing
- * the original math that I did by hand, as well as the Desmos graphs I made to check my reasoning, but it should help get some of the
- * concepts clarified. https://docs.google.com/spreadsheets/d/1RaxqJCClSnBzAPjxKA0sKCvFVXpXQ3Gc1AZQWVGnURM/edit?usp=sharing
- *
- * Also, I inlined this function because it is really short and called frequently, and in cases like those, inlining a function can
- * potentially speed up code execution. I think that's because the processor doesn't have to go through executing a separate function call.
- * I'm not sure though, and don't even know if this speeds things up, but why not? It doesn't hurt, might help, and we need all the speed
- * we can get back for running Mozzi.
- */
-inline int16_t armRadiusToAngle(int16_t radiusMM)
-{
-  uint16_t absRadius = abs(radiusMM); // bit shifting operations on signed integers create weird results, so we have to use an unsigned int
-  uint16_t intermediate = (774 * absRadius) >> 7;
-  return (radiusMM < 0) ? -1 * static_cast<int16_t>(intermediate) : static_cast<int16_t>(intermediate);
-}
-
-/**
- * @brief converts an arm angle in encoder counts to the corresponding radius of the sensor from the center of the table in millimeters.
- *
- * @param angleCounts the angle in encoder counts (4096 per revolution).
- *
- * @return the radius of the sensor from the center of the table in millimeters.
- *
- * @paragraph This is similar to the function armRadiusToAngle() in which I used a linear integer approximation of a function that
- * relies on floating point numbers and trigonometry functions. The precise function that converts an angle to a radius is:
- *
- * radius = 216 * sin(angle * pi / 4096)
- *
- * This can be pretty well approximated by the function
- *
- * radius = 81 * angle >> 9
- *
- * At worst, this approximation will produce a positional error of 2mm. This seems acceptable in this context, since backlash in the gears
- * and play in the arm height adjustment system produce more that 2mm of error, and this isn't a system where 2mm of error is going to make
- * a huge difference. The average and median error are .17mm and .42mm respectively in my sample set, which you can see in the spreadsheet
- * linked above.
- *
- * One important note about the linear approximations in both of these functions is that they only work because we're working with a restricted
- * domain. The sensor arm can only move through limited range of motion from about -44 degrees to 58 degrees. The functions that convert
- * angle to radius and radius to angle both look reasonably linear across that domain. However, if we were dealing with an unrestricted range
- * of motion (if the arm could spin in a full circle), these approximations wouldn't work at all, and we would need to look into other methods
- * of speeding up these math operations. If you're interested in this, you could look into piecewise linear functions and the closely related
- * concept of a lookup table with linear interpolation. You could also look into CORDIC (coordinate rotation digital computer) which is a common
- * efficient method for calculating things like trig functions. This kind of thing is used everywhere in software. Every video game you've ever
- * played has basically been a giant system of linear algebra and trig functions.
- */
-inline int16_t armAngleToRadius(int16_t angleCounts)
-{
-  uint16_t absAngleCounts = abs(angleCounts);
-  uint16_t intermediate = (81 * absAngleCounts) >> 9;
-  return (angleCounts < 0) ? -1 * static_cast<int16_t>(intermediate) : static_cast<int16_t>(intermediate);
-
-  // note that the above is functionally equivalent to the following:
-  // if (angleCounts < 0) {
-  //   return -1 * intermediate;
-  // } else {
-  //   return intermediate;
-  // }
-}
-
-
-
-
-constexpr uint8_t noteNameToMIDINote(const char* noteName)
-{
-    constexpr uint8_t OCTAVE = 12;
-    int8_t noteBaseIndex = -1;
-    int8_t octaveNumber = 0;
-
-    if (noteName[1] == '#') {
-        switch (noteName[0]) {
-            case 'C': noteBaseIndex = 1;  break;
-            case 'D': noteBaseIndex = 3;  break;
-            case 'F': noteBaseIndex = 6;  break;
-            case 'G': noteBaseIndex = 8;  break;
-            case 'A': noteBaseIndex = 10; break;
-            default:  return 255;
-        }
-        if (noteName[2] == '-')
-            octaveNumber = -(noteName[3] - '0');
-        else
-            octaveNumber = noteName[2] - '0';
-    } else {
-        switch (noteName[0]) {
-            case 'C': noteBaseIndex = 0;  break;
-            case 'D': noteBaseIndex = 2;  break;
-            case 'E': noteBaseIndex = 4;  break;
-            case 'F': noteBaseIndex = 5;  break;
-            case 'G': noteBaseIndex = 7;  break;
-            case 'A': noteBaseIndex = 9;  break;
-            case 'B': noteBaseIndex = 11; break;
-            default:  return 255;
-        }
-        if (noteName[1] == '-')
-            octaveNumber = -(noteName[2] - '0');
-        else
-            octaveNumber = noteName[1] - '0';
-    }
-
-    return (octaveNumber + 1) * OCTAVE + noteBaseIndex;
-}
-
-
-/*
-// this returns the MIDI note number for any note from C-1 to G9 (MIDI notes 0 through 127).
-// Pass the note name as a string into the parameter. E.g., "D#-1" returns 3, or "F#2" returns 42.
-uint8_t noteNameToMIDINote(const char *noteName)
-{
-  // Arrays for natural and sharp notes
-  const char *naturalNotes[7] = {"C", "D", "E", "F", "G", "A", "B"};
-  const uint8_t naturalNoteBases[7] = {0, 2, 4, 5, 7, 9, 11};
-  const char *sharpNotes[5] = {"C", "D", "F", "G", "A"};
-  const uint8_t sharpNoteBases[5] = {1, 3, 6, 8, 10};
-
-  constexpr uint8_t OCTAVE = 12;
-
-  int8_t noteBaseIndex = -1; // Base index for the note
-  int8_t octaveNumber = 0;   // Octave number
-
-  // Check if the note is sharp or natural
-  if (noteName[1] == '#')
-  {
-    // Sharp note
-    for (int i = 0; i < 5; i++)
-    {
-      if (noteName[0] == sharpNotes[i][0])
-      {
-        noteBaseIndex = sharpNoteBases[i];
-        break;
-      }
-    }
-    if (noteBaseIndex == -1 || (noteName[2] != '-' && !isdigit(noteName[2])))
-      return 255; // Invalid note
-    // Handle negative octave
-    if (noteName[2] == '-')
-    {
-      octaveNumber = -1; // Convert char to int and make negative
-    }
-    else
-    {
-      octaveNumber = noteName[2] - '0'; // Convert char to int
-    }
-  }
-  else
-  {
-    // Natural note
-    for (int i = 0; i < 7; i++)
-    {
-      if (noteName[0] == naturalNotes[i][0])
-      {
-        noteBaseIndex = naturalNoteBases[i];
-        break;
-      }
-    }
-    if (noteBaseIndex == -1 || (noteName[1] != '-' && !isdigit(noteName[1])))
-      return 255; // Invalid note
-    // Handle negative octave
-    if (noteName[1] == '-')
-    {
-      octaveNumber = -(noteName[2] - '0'); // Convert char to int and make negative
-    }
-    else
-    {
-      octaveNumber = noteName[1] - '0'; // Convert char to int
-    }
-  }
-  // Calculate the MIDI note number
-  return (octaveNumber + 1) * OCTAVE + noteBaseIndex;
-}
-*/
 
 // Converts a MIDI note number into a string (const char*) note name. E.g., 42 -> F#2
 const char *MIDINoteToNoteName(uint8_t note)
@@ -1042,8 +777,8 @@ void ambienceGenerator()
   if (initialize)
   {
     // scaleContainer.scaleSelector = 2;
-    currentScale = scaleContainer.scaleArray[scaleContainer.scaleSelector];
-    numNotesInScale = scaleContainer.numNotesInSelectedScale[scaleContainer.scaleSelector];
+    // currentScale = scaleContainer.scaleArray[scaleContainer.scaleSelector];
+    // numNotesInScale = scaleContainer.numNotesInSelectedScale[scaleContainer.scaleSelector];
     osc0AmpEnv.setADLevels(160, 140);
     osc1AmpEnv.setADLevels(60, 50);
     osc2AmpEnv.setADLevels(120, 110);
@@ -1081,13 +816,17 @@ void ambienceGenerator()
     {
       if (rand(256) < mappedRed)
       {
-        if (scaleContainer.selected().numNotes == 7)
+        switch (scaleContainer.selected().numNotes)
         {
-          osc0Params.noteMIDINumber = currentScale[colorToScaleNote7(mappedGreen)] + ((int8_t)rand(-1, 2) * 12);
-        }
-        else
-        {
-          osc0Params.noteMIDINumber = currentScale[colorToScaleNote5(mappedGreen)] + ((int8_t)rand(-1, 2) * 12);
+          case 7:
+            // osc0Params.noteMIDINumber = currentScale[colorToScaleNote7(mappedGreen)] + ((int8_t)rand(-1, 2) * 12);
+            osc0Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote7(mappedGreen)) + ((int8_t)rand(-1, 2) * 12);
+            break;
+          case 5:
+            osc0Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote5(mappedGreen)) + ((int8_t)rand(-1, 2) * 12);
+            break;
+          default:
+            break;
         }
       }
       osc0AmpEnv.noteOn();
@@ -1101,14 +840,26 @@ void ambienceGenerator()
     {
       if (rand(256) < mappedGreen)
       {
-        if (scaleContainer.selected().numNotes == 7)
+        switch (scaleContainer.selected().numNotes)
         {
-          osc1Params.noteMIDINumber = currentScale[colorToScaleNote7(mappedBlue)] + ((int8_t)rand(-1, 2) * 12);
+          case 7:
+            // osc0Params.noteMIDINumber = currentScale[colorToScaleNote7(mappedGreen)] + ((int8_t)rand(-1, 2) * 12);
+            osc0Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote7(mappedGreen)) + ((int8_t)rand(-1, 2) * 12);
+            break;
+          case 5:
+            osc0Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote5(mappedGreen)) + ((int8_t)rand(-1, 2) * 12);
+            break;
+          default:
+            break;
         }
-        else
-        {
-          osc1Params.noteMIDINumber = currentScale[colorToScaleNote5(mappedBlue)] + ((int8_t)rand(-1, 2) * 12);
-        }
+        // if (scaleContainer.selected().numNotes == 7)
+        // {
+        //   osc1Params.noteMIDINumber = currentScale[colorToScaleNote7(mappedBlue)] + ((int8_t)rand(-1, 2) * 12);
+        // }
+        // else
+        // {
+        //   osc1Params.noteMIDINumber = currentScale[colorToScaleNote5(mappedBlue)] + ((int8_t)rand(-1, 2) * 12);
+        // }
       }
       osc1AmpEnv.noteOn();
       osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
@@ -1121,14 +872,26 @@ void ambienceGenerator()
     {
       if (rand(256) < mappedBlue)
       {
-        if (scaleContainer.selected().numNotes == 7)
+        switch (scaleContainer.selected().numNotes)
         {
-          osc2Params.noteMIDINumber = currentScale[colorToScaleNote7(mappedRed)] + ((int8_t)rand(-1, 2) * 12);
+          case 7:
+            // osc0Params.noteMIDINumber = currentScale[colorToScaleNote7(mappedGreen)] + ((int8_t)rand(-1, 2) * 12);
+            osc0Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote7(mappedGreen)) + ((int8_t)rand(-1, 2) * 12);
+            break;
+          case 5:
+            osc0Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote5(mappedGreen)) + ((int8_t)rand(-1, 2) * 12);
+            break;
+          default:
+            break;
         }
-        else
-        {
-          osc2Params.noteMIDINumber = currentScale[colorToScaleNote5(mappedRed)] + ((int8_t)rand(-1, 2) * 12);
-        }
+        // if (scaleContainer.selected().numNotes == 7)
+        // {
+        //   osc2Params.noteMIDINumber = currentScale[colorToScaleNote7(mappedRed)] + ((int8_t)rand(-1, 2) * 12);
+        // }
+        // else
+        // {
+        //   osc2Params.noteMIDINumber = currentScale[colorToScaleNote5(mappedRed)] + ((int8_t)rand(-1, 2) * 12);
+        // }
       }
       osc2AmpEnv.noteOn();
       osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
@@ -1171,7 +934,8 @@ void ambienceGenerator()
       i = colorToScaleNote5(mappedGreen);
     }
 
-    osc0Params.noteMIDINumber = currentScale[i];
+    osc0Params.noteMIDINumber = scaleContainer.selected().getNote(i);
+    // osc0Params.noteMIDINumber = currentScale[i];
     if (osc0Params.lastNoteMIDINumber != osc0Params.noteMIDINumber)
     {
       osc0AmpEnv.noteOn();
@@ -1196,13 +960,16 @@ void ambienceGenerator()
     switch (scaleContainer.scaleSelector)
     {
     case 0:
-      osc1Params.noteMIDINumber = currentScale[(j + 4) % scaleContainer.selected().numNotes] - 12;
+      osc1Params.noteMIDINumber = scaleContainer.selected().getNote((j + 4) % scaleContainer.selected().numNotes) - 12;
+      // osc1Params.noteMIDINumber = currentScale[(j + 4) % scaleContainer.selected().numNotes] - 12;
       break;
     case 1:
-      osc1Params.noteMIDINumber = currentScale[(i + 2) % scaleContainer.selected().numNotes] + octaveShifter * 12;
+      osc1Params.noteMIDINumber = scaleContainer.selected().getNote((i + 2) % scaleContainer.selected().numNotes) + octaveShifter * 12;
+      // osc1Params.noteMIDINumber = currentScale[(i + 2) % scaleContainer.selected().numNotes] + octaveShifter * 12;
       break;
     case 2:
-      osc1Params.noteMIDINumber = currentScale[j] - 12;
+      osc1Params.noteMIDINumber = scaleContainer.selected().getNote((i)) - 12;
+      // osc1Params.noteMIDINumber = currentScale[j] - 12;
       break;
     default:
       break;
@@ -1223,7 +990,8 @@ void ambienceGenerator()
     {
 
       // osc2Params.noteMIDINumber = scale_CLydianMIDI[k] + octaveShifter;
-      osc2Params.noteMIDINumber = currentScale[(i + 3) % scaleContainer.selected().numNotes] + (octaveShifter * 12); // pretty good
+      osc2Params.noteMIDINumber = scaleContainer.selected().getNote((i + 3) % scaleContainer.selected().numNotes) + (octaveShifter * 12);
+      // osc2Params.noteMIDINumber = currentScale[(i + 3) % scaleContainer.selected().numNotes] + (octaveShifter * 12); // pretty good
       // osc2Params.noteMIDINumber = scale_CLydianMIDI[(i + 3) % numNotesInScale] - 7;
       if (osc2Params.lastNoteMIDINumber != osc2Params.noteMIDINumber)
       {
@@ -1253,7 +1021,8 @@ void ambienceGenerator()
       }
       if (arpNoteTimer.ready())
       {
-        osc2Params.noteMIDINumber = currentScale[arpIndex] + (12 * (int8_t)rand(-1, 3));
+        osc2Params.noteMIDINumber = scaleContainer.selected().getNote(arpIndex) + (12 * (int8_t)rand(-1, 3));
+        // osc2Params.noteMIDINumber = currentScale[arpIndex] + (12 * (int8_t)rand(-1, 3));
         osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
         osc2Params.volume = 120;
 
@@ -1292,169 +1061,7 @@ void ambienceGenerator()
   }
 }
 
-//  version that finds closest reference color
-// void ambienceGenerator() {
 
-//   SERIAL_PRINT(mappedRed); SERIAL_TAB; SERIAL_PRINT(mappedGreen); SERIAL_TAB; SERIAL_PRINT(mappedBlue); SERIAL_TAB; SERIAL_PRINTLN(mappedWhite);
-//   // ReferenceColor closestColor = findClosestColor(mappedRed, mappedGreen, mappedBlue);
-//   // SERIAL_PRINTLN(closestColor.name);
-// }
-
-/*
-void ambienceGenerator() {
-  // parameter containers for three oscillators
-  static uint16_t arpInterval = 0;        // time between arp notes
-  bool arpeggiate = false;                // flag that indicates that we should arp
-  static bool arpInProgress = false, initialize = true, arpNoteStarted = false;
-  static Chord currentChord = progressionVar1[0], lastChord = currentChord;
-  static uint8_t chordIterator = 0, arpIterator = 0;
-
-  if (initialize) {
-    chordTimer.set(500);
-    chordTimer.start();
-    initialize = false;
-  }
-
-  if (chordTimer.ready()) {
-    uint8_t r = rand(256);
-    bool nextChord = (r < mappedGreen) ? true : false; // generate a random number, and if it's smaller than mappedGreen, move to the next chord
-    if (nextChord) {
-      chordIterator = (chordIterator + 1) % numChordsInProgression;
-    }
-    SERIAL_PRINT(r); SERIAL_TAB; SERIAL_PRINT(mappedGreen); SERIAL_TAB; SERIAL_PRINT(nextChord); SERIAL_TAB; SERIAL_PRINT(chordIterator);
-
-    // chordIterator = (rand(256) < mappedGreen) ? chordIterator++ : chordIterator;
-    // chordIterator %= numChordsInProgression;
-    // currentChord = progression[mappedGreen >> 6];    // should shift this down from 0-255 to 0-3
-    currentChord = progressionVar1[chordIterator];
-    osc0Params.note = getNoteFromArpeggio(currentChord.notes, 4, 0);
-    osc0Params.noteMIDINumber = noteNameToMIDINote(osc0Params.note);
-    osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
-    osc0.setFreq(osc0Params.frequency);
-    osc0Params.volume = 200;
-    // SERIAL_PRINT(osc0Params.noteMIDINumber);
-    // SERIAL_TAB;
-
-    osc1Params.noteMIDINumber = noteNameToMIDINote(osc1Params.note);
-    osc1Params.note = getNoteFromArpeggio(currentChord.notes, 4, 1);
-    osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
-    osc1.setFreq(osc1Params.frequency);
-    osc1Params.volume = 200;
-    // SERIAL_PRINT(osc1Params.noteMIDINumber);
-    // SERIAL_TAB;
-
-    arpeggiate = (rand(256) < mappedBlue) ? true : false; // if we cross the threshold, arpeggiate next time around
-    if (!arpeggiate) {
-      osc2Params.note = getNoteFromArpeggio(currentChord.notes, 4, 2);
-      osc2Params.noteMIDINumber = noteNameToMIDINote(osc2Params.note);
-      osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
-      osc2.setFreq(osc2Params.frequency);
-      osc2Params.volume = 200;
-      // SERIAL_PRINTLN(osc2Params.noteMIDINumber);
-      chordTimer.start();
-    } else {
-      if (!arpInProgress) {
-        arpInProgress = true;
-        arpDurationTimer.set(4000);
-        arpDurationTimer.start();
-      } else {
-        if (arpDurationTimer.ready()) {
-          arpInProgress = false;
-          arpeggiate = false;       // reset to wait for new threshold
-        } else {
-          if (!arpNoteStarted) {
-            SERIAL_PRINTLN("hello");
-            arpNoteStarted = true;
-            arpNoteTimer.set(250);
-            arpNoteTimer.start();
-            osc2Params.note = getNoteFromArpeggio(scale_DMixolydian, numNotesInScale, arpIterator);
-            arpIterator = (arpIterator + 1) % numNotesInScale;
-            osc2Params.noteMIDINumber = noteNameToMIDINote(osc2Params.note);
-            osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
-            osc2Params.volume = 150;
-            osc2.setFreq(osc2Params.frequency);
-          } else {
-            if (arpNoteTimer.ready()) arpNoteStarted = false;
-          }
-        }
-      }
-    }
-    SERIAL_TAB; SERIAL_PRINT(arpeggiate); SERIAL_TAB; SERIAL_PRINTLN(arpIterator);
-  }
-
-}
-
-*/
-
-/*
-void ambienceGenerator() {
-  // SERIAL_PRINTLN(arpInterval);
-  static uint8_t note0 = 0, note1 = 0, note2 = 0;
-  static float f0 = 0.0, f1 = 0.0, f2 = 0.0;
-  arpInterval = arpIntervalMap(mappedRed);
-  static bool osc1IntervalStarted = false, osc2IntervalStarted = false;
-
-  static uint8_t phaseI = 0;
-
-  // static uint16_t osc1OffsetInterval = mappedBlue, osc2OffsetInterval = mappedGreen;
-
-  if (!arpIntervalTimerStarted) {
-    arpIntervalTimer.set(arpInterval);
-    arpIntervalTimer.start();
-    arpIntervalTimerStarted = true;
-
-    // osc1OffsetInterval = (arpInterval - mappedBlue);
-    osc1OffsetInterval = (arpInterval > mappedBlue) ? (max(62, arpInterval - mappedBlue)) : 15;
-    osc1OffsetTimer.set(osc1OffsetInterval);
-    if (!osc1IntervalStarted) {
-      osc1OffsetTimer.start();
-      osc1IntervalStarted = true;
-    }
-
-    osc2OffsetInterval = arpInterval >> 1;
-    osc2OffsetTimer.set(osc2OffsetInterval);
-    if (!osc2IntervalStarted) {
-      osc2OffsetTimer.start();
-      osc2IntervalStarted = true;
-    }
-  }
-
-  if (arpIntervalTimer.ready()) {
-    // get the note
-    note0 = 0 + arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, 0, 0, 0, 0);
-    // convert the MIDI note number to a frequency
-    f0 = mtof(note0);
-    // set the oscillator frequency
-    osc0.setFreq(f0);
-
-    // the arp was triggered, so reset this flag so we can restart the timer next loop
-    arpIntervalTimerStarted = false;
-  }
-
-  if (osc1OffsetTimer.ready()) {
-    note1 = -12 + arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, 0, -2, 0, 0);
-    f1 = mtof(note1);
-    osc1.setFreq(f1);
-    osc1OffsetTimer.set(osc1OffsetInterval);
-    osc1OffsetTimer.start();
-  }
-
-  if (osc2OffsetTimer.ready()) {
-    note2 = 0 + arpeggiator(numNotesInScale, scaleNumbers_EbPentatonicMinor, 0, 5, 1, 0);
-    f2 = mtof(note2);
-    osc2.setFreq(f2);
-    osc2OffsetTimer.set(osc2OffsetInterval);
-    osc2OffsetTimer.start();
-  }
-
-  // osc1.setPhase(0);    // mapped green is uint8_t, phase is uint_16t, doing this roughly expands mappedGreen into the appropriate range of values
-
-  v0 = 100;
-  v1 = 100;
-  v2 = 100;
-}
-
-*/
 
 /**
  * I just realized I've been trying to use the arpeggiator function like a class, where each oscillator can call to it independently and get a unique note back.

@@ -48,7 +48,7 @@
 // set to 1 to change the PWM clock divisor for pins 5 and 6 (timer 0) - removes motor noise from audio
 #define USE_FAST_PWM 1
 
-
+constexpr uint8_t I2C_UPDATE_INTERVAL = 15; // time in milliseconds
 
 
 
