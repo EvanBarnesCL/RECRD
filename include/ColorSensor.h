@@ -1,5 +1,5 @@
-#ifndef COLORTOOLS_H
-#define COLORTOOLS_H
+#ifndef COLORSENSOR_H
+#define COLORSENSOR_H
 #include <Arduino.h>
 #include <Configuration.h>
 #include <FixMath.h>

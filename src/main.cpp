@@ -62,7 +62,7 @@ void moveArmToAngle(int16_t targetAngle, int16_t currentAngle);
 // Color sensor stuff
 // **********************************************************************************
 
-#include <ColorTools.h>
+#include <ColorSensor.h>
 // instantiate the object that will manage the color sensor
 CLS16D24 RGBCIR;
 
