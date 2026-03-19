@@ -300,29 +300,51 @@ DEFINE_CHORD(scale_CLydian, root_CLydianScale, root_CLydianScale + 2, root_CLydi
 
 constexpr uint8_t NUM_SCALES = 4;
 
-struct ScaleStorage {
-    const Chord* scales[NUM_SCALES];
-    uint8_t scaleSelector;
+struct ScaleStorage
+{
+  const Chord *scales[NUM_SCALES];
+  static constexpr uint8_t numScales = NUM_SCALES;
+  uint8_t scaleSelector;
 
-    const Chord& selected() const {
-        return *scales[scaleSelector];
-    }
+  const Chord &selected() const
+  {
+    return *scales[scaleSelector];
+  }
 
-    void nextScale() {
-        scaleSelector = (scaleSelector + 1) % NUM_SCALES;
-    }
+  void nextScale()
+  {
+    scaleSelector = (scaleSelector + 1) % NUM_SCALES;
+  }
 
-    void prevScale() {
-        scaleSelector = (scaleSelector == 0) ? NUM_SCALES - 1 : scaleSelector - 1;
-    }
+  void prevScale()
+  {
+    scaleSelector = (scaleSelector == 0) ? NUM_SCALES - 1 : scaleSelector - 1;
+  }
+
+  void selectScale(uint8_t index = 0)
+  {
+    scaleSelector = index % NUM_SCALES;
+  }
 };
 
-ScaleStorage myScales = {
+ScaleStorage scaleContainer = {
     {&scale_CPentatonicMajor, &scale_CHarmonicMajor, &scale_EbPentatonicMinorMIDI, &scale_CLydian},
     0
 };
 
+Chord currentScale = scaleContainer.selected();
+// uint8_t numNotesInScale = scaleContainer.selected().numNotes;
 
+/*
+Examples of how to use the ScaleStorage struct:
+
+Chord current = *myScales.selected();  // doesn't copy note data, just the 3-byte struct
+myScales.selectScale(2);               // changes current scale selection
+uint8_t note = myScales.selected().getNote(2);
+uint8_t count = myScales.selected().numNotes;
+
+myScales.nextScale();
+*/
 
 
 // struct for storing parameters for each oscillator
@@ -545,9 +567,12 @@ void updateControl()
       break;
     case 1: // middle button, scale selector
       // enableButton2Mode = false;
-      scaleContainer.scaleSelector = (scaleContainer.scaleSelector + 1) % scaleContainer.numScales;
-      currentScale = scaleContainer.scaleArray[scaleContainer.scaleSelector];
-      numNotesInScale = scaleContainer.numNotesInSelectedScale[scaleContainer.scaleSelector];
+      scaleContainer.nextScale();
+      currentScale = scaleContainer.selected();
+      
+      // scaleContainer.scaleSelector = (scaleContainer.scaleSelector + 1) % scaleContainer.numScales;
+      // currentScale = scaleContainer.scaleArray[scaleContainer.scaleSelector];
+      // numNotesInScale = scaleContainer.numNotesInSelectedScale[scaleContainer.scaleSelector];
       SERIAL_TABS(2);
       SERIAL_PRINT("scale: ");
       SERIAL_PRINTLN(scaleContainer.scaleSelector);
@@ -1029,6 +1054,20 @@ const char *MIDINoteToNoteName(uint8_t note)
   return noteStr;
 }
 
+
+void setFreqsFromChord(const Chord &chord, UFix<12, 15> &f1, UFix<12, 15> &f2, UFix<12, 15> &f3, UFix<12, 15> &f4)
+{
+    UFix<12, 15>* freqs[] = {&f1, &f2, &f3, &f4};
+    for (uint8_t i = 0; i < 4; i++)
+    {
+        uint8_t note = chord.getNote(i);
+        *freqs[i] = (note < 128) ? mtof(UFix<7, 0>(note)) : 0;
+    }
+}
+
+
+
+/*
 void setFreqsFromChord(const Chord &chord, UFix<12, 15> &f1, UFix<12, 15> &f2, UFix<12, 15> &f3, UFix<12, 15> &f4)
 {
   uint8_t note = noteNameToMIDINote(chord.notes[0]);
@@ -1071,6 +1110,7 @@ void setFreqsFromChord(const Chord &chord, UFix<12, 15> &f1, UFix<12, 15> &f2, U
     f4 = 0;
   }
 }
+*/
 
 // pass in a list of notes and get back a single note, e.g.:
 // const char* arpeggio[] = {"A4", "C#2", "D5"};
@@ -1394,7 +1434,7 @@ void ambienceGenerator()
     {
       if (rand(256) < mappedRed)
       {
-        if (numNotesInScale == 7)
+        if (scaleContainer.selected().numNotes == 7)
         {
           osc0Params.noteMIDINumber = currentScale[colorToScaleNote7(mappedGreen)] + ((int8_t)rand(-1, 2) * 12);
         }
@@ -1414,7 +1454,7 @@ void ambienceGenerator()
     {
       if (rand(256) < mappedGreen)
       {
-        if (numNotesInScale == 7)
+        if (scaleContainer.selected().numNotes == 7)
         {
           osc1Params.noteMIDINumber = currentScale[colorToScaleNote7(mappedBlue)] + ((int8_t)rand(-1, 2) * 12);
         }
@@ -1434,7 +1474,7 @@ void ambienceGenerator()
     {
       if (rand(256) < mappedBlue)
       {
-        if (numNotesInScale == 7)
+        if (scaleContainer.selected().numNotes == 7)
         {
           osc2Params.noteMIDINumber = currentScale[colorToScaleNote7(mappedRed)] + ((int8_t)rand(-1, 2) * 12);
         }
@@ -1475,7 +1515,7 @@ void ambienceGenerator()
     }
 
     uint8_t i = 0;
-    if (numNotesInScale == 7)
+    if (scaleContainer.selected().numNotes == 7)
     {
       i = colorToScaleNote7(mappedGreen);
     }
@@ -1498,7 +1538,7 @@ void ambienceGenerator()
 
     uint8_t j = 0;
     // osc1Params.noteMIDINumber = scale_CLydianMIDI[(i + 2 ) % numNotesInScale] + octaveShifter;
-    if (numNotesInScale == 7)
+    if (scaleContainer.selected().numNotes == 7)
     {
       j = colorToScaleNote7(mappedBlue);
     }
@@ -1509,10 +1549,10 @@ void ambienceGenerator()
     switch (scaleContainer.scaleSelector)
     {
     case 0:
-      osc1Params.noteMIDINumber = currentScale[(j + 4) % numNotesInScale] - 12;
+      osc1Params.noteMIDINumber = currentScale[(j + 4) % scaleContainer.selected().numNotes] - 12;
       break;
     case 1:
-      osc1Params.noteMIDINumber = currentScale[(i + 2) % numNotesInScale] + octaveShifter * 12;
+      osc1Params.noteMIDINumber = currentScale[(i + 2) % scaleContainer.selected().numNotes] + octaveShifter * 12;
       break;
     case 2:
       osc1Params.noteMIDINumber = currentScale[j] - 12;
@@ -1536,7 +1576,7 @@ void ambienceGenerator()
     {
 
       // osc2Params.noteMIDINumber = scale_CLydianMIDI[k] + octaveShifter;
-      osc2Params.noteMIDINumber = currentScale[(i + 3) % numNotesInScale] + (octaveShifter * 12); // pretty good
+      osc2Params.noteMIDINumber = currentScale[(i + 3) % scaleContainer.selected().numNotes] + (octaveShifter * 12); // pretty good
       // osc2Params.noteMIDINumber = scale_CLydianMIDI[(i + 3) % numNotesInScale] - 7;
       if (osc2Params.lastNoteMIDINumber != osc2Params.noteMIDINumber)
       {
@@ -1561,7 +1601,7 @@ void ambienceGenerator()
         arpStarted = true;
         arpNoteTimer.set(min(mappedBlue, 192));
         arpNoteTimer.start();
-        arpIndex = rand(numNotesInScale);
+        arpIndex = rand(scaleContainer.selected().numNotes);
         osc2AmpEnv.setTimes(5, 5, 100, 100);
       }
       if (arpNoteTimer.ready())
@@ -1581,7 +1621,7 @@ void ambienceGenerator()
                               // } else if (arpIndex > numNotesInScale - 1) {
         //   arpIndex -= numNotesInScale;
         // }
-        arpIndex = (arpIndex < numNotesInScale && arpIndex >= 0) ? arpIndex : ((arpIndex < 0) ? arpIndex += numNotesInScale : arpIndex -= numNotesInScale);
+        arpIndex = (arpIndex < scaleContainer.selected().numNotes && arpIndex >= 0) ? arpIndex : ((arpIndex < 0) ? arpIndex += scaleContainer.selected().numNotes : arpIndex -= scaleContainer.selected().numNotes);
         arpNoteTimer.start();
         numNotesLeftInArp -= 1; // we have one fewer notes left in the arp
       }
