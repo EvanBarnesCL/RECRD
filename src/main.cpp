@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <Configuration.h>
 #include <Crunchlabs_DRV8835.h>  // motor driver
 #include <Wire.h>                // I2C
 #include <PWMFreak.h>            // Changes clock rate of timers (used to remove audible noise from motor driver and LED dimming)
@@ -18,45 +19,7 @@
 #include <Portamento.h>
 #include <ADSR.h>
 
-//  
-/**
- * This is a macro for easily enabling or disabling the Serial monitor print statements.
- *
- * You can enable serial print debugging by setting
- *    #define USE_SERIAL 1
- *
- * Or, you can disable serial print debugging by setting
- *    #define USE_SERIAL 0
- *
- * In your main code, rather than using Serial.print() or Serial.println(), use their aliases defined below (e.g., SERIAL_PRINTLN()).
- *
- * The Serial code takes up a lot of flash and RAM, so it really is worth disabling it if you don't need it. When I disabled it for
- * this program, I save about 12% of the RAM and 7% of the flash storage space. That's already a large savings that could make
- * the difference between a synth that sounds good and one that glitches. But printing to the serial monitor is also pretty slow,
- * so disabling saves a lot of processing time too.
- *  */
 
-#define USE_SERIAL 0
-
-#if USE_SERIAL
-  #define SERIAL_PRINT(x) Serial.print(x)
-  #define SERIAL_PRINTLN(x) Serial.println(x)
-  #define SERIAL_BEGIN(baud) Serial.begin(baud)
-  #define SERIAL_TAB Serial.print("\t")
-  #define SERIAL_TABS(x)
-  for (uint8_t i = 0; i < x; i++)
-  {
-    Serial.print("t");
-  }
-  #define SERIAL_BEGIN(x) Serial.begin(x)
-#else
-  #define SERIAL_PRINT(x)       do {} while (0)
-  #define SERIAL_PRINTLN(x)     do {} while (0)
-  #define SERIAL_BEGIN(baud)    do {} while (0)
-  #define SERIAL_TAB            do {} while (0)
-  #define SERIAL_TABS(x)        do {} while (0)
-  #define SERIAL_BEGIN(x)       do {} while (0)
-#endif
 
 // **********************************************************************************
 // Arm and Table stuff
@@ -69,8 +32,6 @@ constexpr uint8_t TABLE_SPEED_PIN = 5,
                   ARM_DIR_PIN = 7,
                   LED_PIN = 11;
 
-// set to 1 to change the PWM clock divisor for pins 5 and 6 (timer 0) - removes motor noise from audio
-#define USE_FAST_PWM 1
 
 // motor objects
 DRV8835 tableMotor(TABLE_SPEED_PIN, TABLE_DIR_PIN, 50, true);
@@ -101,78 +62,11 @@ void moveArmToAngle(int16_t targetAngle, int16_t currentAngle);
 // Color sensor stuff
 // **********************************************************************************
 
+#include <ColorTools.h>
 // instantiate the object that will manage the color sensor
 CLS16D24 RGBCIR;
 
-bool updateChannels[5] = {false, false, false, false, false}; // Flags to control which channels to update. defaults to all five off.
 
-// this enum class provides a clear way to explicitly reference a color channel (instead of using an integer or something)
-enum class ColorChannels
-{
-  RED,
-  GREEN,
-  BLUE,
-  CLEAR,
-  IR
-};
-
-// struct for storing the raw color value readings from the sensor as uint16_t.
-// be aware that if you change the resolution of the sensor to exceed 16 bits, you're going to have a problem
-// with overflow here.
-struct ColorValues
-{
-  uint16_t red = 0;
-  uint16_t green = 0;
-  uint16_t blue = 0;
-  uint16_t clear = 0;
-  uint16_t IR = 0;
-};
-
-ColorValues colorData; // struct for the raw color data
-
-// this stores color data as unsigned 16 bit integers in the fixed point format that Mozzi and FixMath use.
-struct FixedPointColorValues
-{
-  UFix<16, 0> redFixed = 0;
-  UFix<16, 0> greenFixed = 0;
-  UFix<16, 0> blueFixed = 0;
-  UFix<16, 0> clearFixed = 0;
-  UFix<16, 0> IRFixed = 0;
-};
-
-// struct for storing the color data as fixed point values after they have been white balance corrected (after scaleColorDataFixedPoint() is applied to the raw colorData)
-FixedPointColorValues scaledFixedColorData;
-
-// where color data that has been mapped into control signals will be stored
-uint8_t mappedGreen = 0, mappedBlue = 0, mappedRed = 0, mappedWhite = 0;
-
-// delay timer for updating sensor data. When the sensor data is getting updated, the processor can't simultaneously update the sound it's generating.
-// You can update the sensor more frequently, but that might negatively impact sound generation. This also updates all three sensors simultaneously,
-// and it might work better to update each of them at staggered intervals.
-EventDelay k_i2cUpdateDelay;
-constexpr uint8_t I2C_UPDATE_INTERVAL = 15; // time in milliseconds
-
-// constants and variables relating to the LEDs on the arm that illuminate the table
-#define USE_LED_PWM 1 // set to 1 to change the PWM clock divisor for pins 3 and 11 (timer 2) - removes PWM noise due to LED dimming from audio
-constexpr uint8_t NUM_BRIGHTNESS_LEVELS = 5;
-uint8_t brightnessIterator = 3; // default to brightness level 3 on startup
-constexpr uint16_t LEDBrightnessSequence = 0b1000011000100001;
-
-// This function generates the sequence 0, 31, 63, 191, 255 to correspond to 5 PWM values for LED dimming. To
-// understand how it works, see the section [[#how LED brightness PWM values are calculated]] in Footnotes.md
-inline uint8_t getBrightness(uint8_t level = 3)
-{
-    return static_cast<uint8_t>(
-        (level == 0) ? 0 : ((((LEDBrightnessSequence >> (4 * (level - 1))) & 0xF) << 5) - 1)
-    );
-}
-
-
-// function prototypes
-bool updateColorReadings(ColorValues *colorReadings);
-void printColorData();
-void scaleColorData(ColorValues *rawData);                                              // used to scale the RGB values relative to each other a bit
-void scaleColorDataFixedPoint(ColorValues *rawData, FixedPointColorValues *scaledVals); // scales raw sensor values and returns them as fixed point math values instead of uint16_t
 
 // **********************************************************************************
 // Potentiometers and buttons
@@ -206,146 +100,9 @@ Oscil<TRIANGLE_VALVE_2_2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc2(TRIANGLE_VALVE_2_2
 // Music stuff
 // **********************************************************************************
 
-// typedef uint8_t MIDI_NOTE;
-using MIDI_NOTE = uint8_t; // just for readability elsewhere, I'm creating an alias called MIDI_NOTE that is just uint8_t datatype.
-
-// an array of 4 pointers to const char* strings that define up to four notes in a chord
-// struct Chord
-// {
-//   const char *notes[4];
-// };
+#include <MusicTools.h>
 
 
-struct Chord {
-    const uint8_t* notes;   // pointer to PROGMEM array
-    uint8_t numNotes;
-
-    uint8_t getNote(uint8_t index) const {
-        if (index >= numNotes) return 255;
-        return pgm_read_byte(&notes[index]);
-    }
-};
-
-// function prototypes
-//
-//original
-// uint8_t noteNameToMIDINote(const char *noteName); // convert note names to MIDI note numbers (e.g., F#2 -> 42)
-
-// new test
-constexpr uint8_t noteNameToMIDINote(const char* noteName);
-
-const char *MIDINoteToNoteName(uint8_t note);     // convert MIDI note to note name (e.g., 42 -> F#2)
-void convertArray_NoteNumbersToNames(const uint8_t midiNotes[], uint8_t numNotes, const char *noteNames[]);   // this converts whole arrays, which I think I can actually avoid
-void convertArray_NoteNamesToNumbers(const char *noteNames[], uint8_t numNotes, uint8_t midiNotes[]);
-uint8_t snapToNearestNote(uint8_t inputValue, const uint8_t notes[], uint8_t numNotes);
-void setFreqsFromChord(const Chord &chord, UFix<12, 15> &f1, UFix<12, 15> &f2, UFix<12, 15> &f3, UFix<12, 15> &f4);
-const char *getNoteFromArpeggio(const char *notes[], uint8_t numNotes, uint8_t selector);
-uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t *scaleNumbers, uint8_t manualIndex, int8_t offset, uint8_t arpMode, uint8_t arpSpread);
-void ambienceGenerator(); // right now i just want to wrap all the sound control stuff in a function so I can easily separate it out from the rest of updateControl()
-void toneBeatsGenerator();
-
-#define DEFINE_CHORD(name, ...)                                         \
-    const uint8_t name##_data[] PROGMEM = {__VA_ARGS__};               \
-    const Chord name = {name##_data, sizeof(name##_data)}
-
-#define N(s) noteNameToMIDINote(s)
-
-DEFINE_CHORD(scale_CPentatonicMajor, N("C3"), N("D3"), N("E3"), N("G3"), N("A3"));
-
-DEFINE_CHORD(scale_CHarmonicMajor, N("C3"), N("D3"), N("E3"), N("F3"), N("G3"), N("G#3"), N("B3"));
-
-DEFINE_CHORD(scale_EbPentatonicMinorMIDI, N("D#3"), N("F#3"), N("G#3"), N("A#3"), N("C#4"));
-
-constexpr MIDI_NOTE root_CLydianScale = 48; // MIDI note number for C3
-DEFINE_CHORD(scale_CLydian, root_CLydianScale, root_CLydianScale + 2, root_CLydianScale + 4, root_CLydianScale + 6, root_CLydianScale + 7, root_CLydianScale + 9, root_CLydianScale + 11);
-
-
-
-// C#maj Pentatonic
-// const MIDI_NOTE scale_CPentatonicMajor[5] = {48, 50, 52, 55, 57};
-// Chord<5> scale_CPentatonicMajor((const char*){"C3", "D3", "E3", "G3", "A3"});
-
-
-// C harmonic major scale
-// const char *scale_CHarmonicMajor[] = {"C3", "D3", "E3", "F3", "G3", "G#3", "B3"};
-// const MIDI_NOTE scale_CHarmMajorMIDI[7] = {48, 50, 52, 53, 55, 56, 59};
-
-// Eb pentatonic minor scale
-// const char *scale_EbPentatonicMinor[5] = {"D#3", "F#3", "G#3", "A#3", "C#4"};
-// MIDI_NOTE scale_EbPentatonicMinorMIDI[5] = {51, 54, 56, 58, 61};
-
-// C Lydian scale
-// constexpr MIDI_NOTE root_CLydianScale = 48; // MIDI note number for C3
-// const MIDI_NOTE scale_CLydianMIDI[7] = {root_CLydianScale, root_CLydianScale + 2, root_CLydianScale + 4, root_CLydianScale + 6, root_CLydianScale + 7, root_CLydianScale + 9, root_CLydianScale + 11};
-
-// number of scales we'll be storing in the container
-// constexpr uint8_t NUM_SCALES = 3;
-
-// // array for storing the scales and another array for storing the associated note numbers
-// struct scaleStorage
-// {
-//   const uint8_t numScales = 3;
-//   uint8_t scaleSelector = 0;
-//   const MIDI_NOTE *scaleArray[NUM_SCALES] = {scale_EbPentatonicMinorMIDI, scale_CLydianMIDI, scale_CPentatonicMajor};
-//   const uint8_t numNotesInSelectedScale[3] = { // this calculates number of notes in each scale
-//       sizeof(scale_EbPentatonicMinorMIDI) / sizeof(scale_EbPentatonicMinorMIDI[0]),
-//       sizeof(scale_CLydianMIDI) / sizeof(scale_CLydianMIDI[0]),
-//       sizeof(scale_CPentatonicMajor) / sizeof(scale_CPentatonicMajor[0])};
-// };
-
-// scaleStorage scaleContainer;
-
-// const MIDI_NOTE *currentScale = scaleContainer.scaleArray[scaleContainer.scaleSelector];
-// uint8_t numNotesInScale = scaleContainer.numNotesInSelectedScale[scaleContainer.scaleSelector];
-
-
-constexpr uint8_t NUM_SCALES = 4;
-
-struct ScaleStorage
-{
-  const Chord *scales[NUM_SCALES];
-  static constexpr uint8_t numScales = NUM_SCALES;
-  uint8_t scaleSelector;
-
-  const Chord &selected() const
-  {
-    return *scales[scaleSelector];
-  }
-
-  void nextScale()
-  {
-    scaleSelector = (scaleSelector + 1) % NUM_SCALES;
-  }
-
-  void prevScale()
-  {
-    scaleSelector = (scaleSelector == 0) ? NUM_SCALES - 1 : scaleSelector - 1;
-  }
-
-  void selectScale(uint8_t index = 0)
-  {
-    scaleSelector = index % NUM_SCALES;
-  }
-};
-
-ScaleStorage scaleContainer = {
-    {&scale_CPentatonicMajor, &scale_CHarmonicMajor, &scale_EbPentatonicMinorMIDI, &scale_CLydian},
-    0
-};
-
-Chord currentScale = scaleContainer.selected();
-// uint8_t numNotesInScale = scaleContainer.selected().numNotes;
-
-/*
-Examples of how to use the ScaleStorage struct:
-
-Chord current = *myScales.selected();  // doesn't copy note data, just the 3-byte struct
-myScales.selectScale(2);               // changes current scale selection
-uint8_t note = myScales.selected().getNote(2);
-uint8_t count = myScales.selected().numNotes;
-
-myScales.nextScale();
-*/
 
 
 // struct for storing parameters for each oscillator
@@ -836,92 +593,7 @@ inline int16_t armAngleToRadius(int16_t angleCounts)
   // }
 }
 
-bool updateColorReadings(ColorValues *colorReadings)
-{
-  RGBCIR.readRGBWIR(colorReadings->red, colorReadings->green, colorReadings->blue, colorReadings->clear, colorReadings->IR);
-  return true;
-}
 
-void printColorData()
-{
-  bool first = true; // To manage commas between printed values
-  struct updatingColors
-  {
-    bool r = false;
-    bool g = false;
-    bool b = false;
-    bool c = false;
-    bool ir = false;
-  };
-
-  updatingColors channels;
-
-  if (updateChannels[static_cast<int>(ColorChannels::BLUE)])
-  {
-    if (!first)
-      SERIAL_PRINT("   ");
-    else
-      first = false;
-    // SERIAL_PRINT("Blue:");
-    channels.b = true;
-    // SERIAL_PRINT(colorData.blue);
-    // SERIAL_PRINT(scaledFixedColorData.blueFixed.asInt());
-    SERIAL_PRINT(mappedBlue);
-  }
-
-  if (updateChannels[static_cast<int>(ColorChannels::CLEAR)])
-  {
-    if (!first)
-      SERIAL_PRINT("   ");
-    else
-      first = false;
-    // SERIAL_PRINT("Clear:");
-    channels.c = true;
-    // SERIAL_PRINT(colorData.clear);
-    SERIAL_PRINT(scaledFixedColorData.clearFixed.asInt());
-  }
-
-  if (updateChannels[static_cast<int>(ColorChannels::IR)])
-  {
-    if (!first)
-      SERIAL_PRINT("   ");
-    else
-      first = false;
-    // SERIAL_PRINT("IR:");
-    channels.ir = true;
-    // SERIAL_PRINT(colorData.IR);
-    SERIAL_PRINT(scaledFixedColorData.IRFixed.asInt());
-  }
-
-  if (updateChannels[static_cast<int>(ColorChannels::GREEN)])
-  {
-    if (!first)
-      SERIAL_PRINT("   ");
-    else
-      first = false;
-    // SERIAL_PRINT("Green:");
-    channels.g = true;
-    // SERIAL_PRINT(colorData.green);
-    // SERIAL_PRINT(scaledFixedColorData.greenFixed.asInt());
-    SERIAL_PRINT(mappedGreen);
-  }
-  if (updateChannels[static_cast<int>(ColorChannels::RED)])
-  {
-    if (!first)
-      SERIAL_PRINT("   ");
-    else
-      first = false;
-    // SERIAL_PRINT("Red:");
-    channels.r = true;
-    // SERIAL_PRINT(colorData.red);
-    // SERIAL_PRINT(scaledFixedColorData.redFixed.asInt());
-    SERIAL_PRINT(mappedRed);
-  }
-
-  // SERIAL_PRINT("  "); SERIAL_PRINT(v0);
-
-  SERIAL_PRINTLN();
-}
 
 
 constexpr uint8_t noteNameToMIDINote(const char* noteName)
@@ -1337,32 +1009,6 @@ uint8_t getButtonPressed(uint16_t buttonPinVal)
   return stableVal;
 }
 
-/**
- * used to scale RGB color data relative to each other. I did some testing with a Spyder Checkr 24 color balance
- * checking card used by photographers to figure out these values. Specifically, there is a row of 6 squares that
- * fade from pure white to pure black over several steps of grey. I put each of these under the color sensor, and
- * then looked for multipliers for the blue and red channels that would bring them up to the same level as the green
- * channel, which is generally the most sensitive and shows the strongest response. Using these scaled values has made
- * more intuitive sense to me when comparing what the sensor is looking at with what the values it reports. So now,
- * generally, when the sensor is over a strong red, the red channel with report the largest value; same for green and blue.
- * Before, the green channel was often still reporting higher values than the others, even over a strong blue color.
- * If you look in the datasheet for the sensor, you can see the response curves, and the green channel is just more sensitive.
- */
-void scaleColorData(ColorValues *rawData)
-{
-  rawData->red = (rawData->red * 7) >> 2;                     // this is the same as multiplying the red channel by 1.75, but done with faster math operations
-  rawData->blue = ((uint32_t)rawData->blue * 157286UL) >> 16; // this closely approximates multiplying blue by 2.4 (2.4 is 12/5, and you can approximate 1/5 with 51 >> 8)
-  rawData->IR = rawData->IR << 3;
-}
-
-void scaleColorDataFixedPoint(ColorValues *rawData, FixedPointColorValues *scaledVals)
-{
-  scaledVals->redFixed = UFix<16, 0>((rawData->red * 7) >> 2);
-  scaledVals->greenFixed = UFix<16, 0>(rawData->green);
-  scaledVals->blueFixed = UFix<16, 0>(((uint32_t)rawData->blue * 157286UL) >> 16);
-  scaledVals->clearFixed = UFix<16, 0>(rawData->clear);
-  scaledVals->IRFixed = UFix<16, 0>(rawData->IR << 3);
-}
 
 
 void toneBeatsGenerator()
