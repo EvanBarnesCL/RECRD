@@ -48,6 +48,9 @@
 // set to 1 to change the PWM clock divisor for pins 5 and 6 (timer 0) - removes motor noise from audio
 #define USE_FAST_PWM 1
 
+
+// defines how often to update one of the sensors. The sensors get updated one at a time, so if this is left as the default
+// 15ms interval, each sensor will be updated every 45ms.
 constexpr uint8_t I2C_UPDATE_INTERVAL = 15; // time in milliseconds
 
 
