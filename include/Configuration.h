@@ -28,7 +28,7 @@
  * Flash: [=======   ]  68.8% (used 21120 bytes from 30720 bytes)
  *  */
 
-#define USE_SERIAL 1
+#define USE_SERIAL 0
 
 #if USE_SERIAL
   #define SERIAL_PRINT(x) Serial.print(x)
