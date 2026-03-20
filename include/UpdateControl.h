@@ -105,7 +105,7 @@ void updateControl()
     {
     case 0: // update the arm encoder
       currentArmAngle = armEncoder.getCumulativePosition();
-      currentArmPosition = armAngleToRadius(currentArmAngle);
+      currentArmPosition = convertArmAngleToRadius(currentArmAngle);
       currentSensorToUpdate++;
       break;
     case 1: // update the table encoder
@@ -155,7 +155,7 @@ void updateControl()
 
   // move the arm to the angle required by the potentiometer
   targetArmPos = convertPotValToArmRadius(mozziAnalogRead<10>(POT_A_PIN));
-  int16_t targetArmAngle = armRadiusToAngle(targetArmPos);
+  int16_t targetArmAngle = convertArmRadiusToAngle(targetArmPos);
   moveArmToAngle(targetArmAngle, currentArmAngle);
 
   // set the approriate table motor speed

@@ -197,7 +197,7 @@ void setup()
   // Now home the arm. This moves the arm back to the center of the table by the end of the routine,
   // and then resets the arm encoder position to 0.
   homeArm();
-  currentArmPosition = armAngleToRadius(armEncoder.getCumulativePosition());
+  currentArmPosition = convertArmAngleToRadius(armEncoder.getCumulativePosition());
 
   // start the color sensor I2C connection
   colorSensor.begin(false);
@@ -288,7 +288,6 @@ void updateControl()
   if (initialize)
   {
     buttonTimer.set(250); // 125ms is exactly 1/16th notes for 120bpm in 4/4
-    // buttonTimer.start();
     arpTimeout.set(4000);
     arpTimeout.start();
     initialize = false;
@@ -305,7 +304,7 @@ void updateControl()
   // that occur once you stop shining the bright light. It's like if you were used to a dark room, walked outside into bright sunlight, and your eyes
   // adapted to the bright light and then never adapted to any dim light after that. This could be changed with some kind of relaxation function.
   //
-  // The reason these are static variables inside updateControl() instead of being global is that I wanted to use the RGBCIR.getResolution() function
+  // The reason these are static variables inside updateControl() instead of being global is that I wanted to use the .getResolution() method
   // to be able to set the size of the mapping, rather than hardcoding the value. That way the maps get dynamically resized based on the chosen
   // resolution of the sensor.
   static AutoMap autoGreenToUINT8_T(0, colorSensor.getResolution(), 0, 255);
@@ -370,7 +369,7 @@ void updateControl()
     {
     case 0: // update the arm encoder
       currentArmAngle = armEncoder.getCumulativePosition();
-      currentArmPosition = armAngleToRadius(currentArmAngle);
+      currentArmPosition = convertArmAngleToRadius(currentArmAngle);
       currentSensorToUpdate++;
       break;
 
@@ -420,7 +419,7 @@ void updateControl()
 
   // move the arm to the angle required by the potentiometer
   targetArmPos = convertPotValToArmRadius(mozziAnalogRead<10>(POT_A_PIN));
-  int16_t targetArmAngle = armRadiusToAngle(targetArmPos);
+  int16_t targetArmAngle = convertArmRadiusToAngle(targetArmPos);
   moveArmToAngle(targetArmAngle, currentArmAngle);
 
   // set the approriate table motor speed

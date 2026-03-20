@@ -31,8 +31,8 @@ int32_t currentTableAngle = 0, lastTableAngle = 0;
 
 // function prototypes
 void homeArm();
-int16_t armRadiusToAngle(int16_t radiusMM);    // convert arm radius in millimeters to angle in encoder counts
-int16_t armAngleToRadius(int16_t angleCounts); // convert arm angle in encoder counts to radius in millimeters
+int16_t convertArmRadiusToAngle(int16_t radiusMM);    // convert arm radius in millimeters to angle in encoder counts
+int16_t convertArmAngleToRadius(int16_t angleCounts); // convert arm angle in encoder counts to radius in millimeters
 int16_t convertPotValToArmRadius(uint16_t potVal);
 int16_t convertPotValToTableSpeed(int16_t potVal);
 void moveArmToRadius(int8_t targetRadius, int16_t currentAngle);
@@ -111,7 +111,7 @@ void homeArm()
  * I'm not sure though, and don't even know if this speeds things up, but why not? It doesn't hurt, might help, and we need all the speed
  * we can get back for running Mozzi.
  */
-inline int16_t armRadiusToAngle(int16_t radiusMM)
+inline int16_t convertArmRadiusToAngle(int16_t radiusMM)
 {
   uint16_t absRadius = abs(radiusMM); // bit shifting operations on signed integers create weird results, so we have to use an unsigned int
   uint16_t intermediate = (774 * absRadius) >> 7;
@@ -125,7 +125,7 @@ inline int16_t armRadiusToAngle(int16_t radiusMM)
  *
  * @return the radius of the sensor from the center of the table in millimeters.
  *
- * @paragraph This is similar to the function armRadiusToAngle() in which I used a linear integer approximation of a function that
+ * @paragraph This is similar to the function convertArmRadiusToAngle() in which I used a linear integer approximation of a function that
  * relies on floating point numbers and trigonometry functions. The precise function that converts an angle to a radius is:
  *
  * radius = 216 * sin(angle * pi / 4096)
@@ -148,7 +148,7 @@ inline int16_t armRadiusToAngle(int16_t radiusMM)
  * efficient method for calculating things like trig functions. This kind of thing is used everywhere in software. Every video game you've ever
  * played has basically been a giant system of linear algebra and trig functions.
  */
-inline int16_t armAngleToRadius(int16_t angleCounts)
+inline int16_t convertArmAngleToRadius(int16_t angleCounts)
 {
   uint16_t absAngleCounts = abs(angleCounts);
   uint16_t intermediate = (81 * absAngleCounts) >> 9;
@@ -237,7 +237,7 @@ void moveArmToRadius(int8_t targetRadius, int16_t currentAngle = 0)
 
   // handle motor acceleration
 
-  targetAngle = armRadiusToAngle(targetRadius);
+  targetAngle = convertArmRadiusToAngle(targetRadius);
   int16_t displacement = targetAngle - currentAngle;
 
   if (abs(displacement) <= DEADBAND)
