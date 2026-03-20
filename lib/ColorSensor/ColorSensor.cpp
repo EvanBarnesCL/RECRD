@@ -97,8 +97,12 @@ void ColorSensor::setChannelEnabled(ColorChannels ch, bool enabled)
     _channelEnabled[static_cast<uint8_t>(ch)] = enabled;
 }
 
-void ColorSensor::printColorData(uint8_t mappedRed,  uint8_t mappedGreen,
-                                  uint8_t mappedBlue, uint8_t mappedWhite) const
+bool ColorSensor::getChannelEnabled(ColorChannels ch)
+{
+    return _channelEnabled[static_cast<uint8_t>(ch)];
+}
+
+void ColorSensor::printColorData() const
 {
     bool first = true;
 
@@ -114,31 +118,31 @@ void ColorSensor::printColorData(uint8_t mappedRed,  uint8_t mappedGreen,
     if (_channelEnabled[static_cast<uint8_t>(ColorChannels::BLUE)])
     {
         printSep();
-        SERIAL_PRINT(mappedBlue);
+        SERIAL_PRINT(_raw.blue);
     }
 
     if (_channelEnabled[static_cast<uint8_t>(ColorChannels::CLEAR)])
     {
         printSep();
-        SERIAL_PRINT(_scaled.clearFixed.asInt());
+        SERIAL_PRINT(_raw.clear);
     }
 
     if (_channelEnabled[static_cast<uint8_t>(ColorChannels::IR)])
     {
         printSep();
-        SERIAL_PRINT(_scaled.IRFixed.asInt());
+        SERIAL_PRINT(_raw.IR);
     }
 
     if (_channelEnabled[static_cast<uint8_t>(ColorChannels::GREEN)])
     {
         printSep();
-        SERIAL_PRINT(mappedGreen);
+        SERIAL_PRINT(_raw.green);
     }
 
     if (_channelEnabled[static_cast<uint8_t>(ColorChannels::RED)])
     {
         printSep();
-        SERIAL_PRINT(mappedRed);
+        SERIAL_PRINT(_raw.red);
     }
 
     SERIAL_PRINTLN();

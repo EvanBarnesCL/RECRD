@@ -3,21 +3,7 @@
 #include <Arduino.h>
 #include <Crunchlabs_DRV8835.h>
 #include <AS5600.h>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+#include <EventDelay.h>
 
 // pin assignments
 constexpr uint8_t TABLE_SPEED_PIN = 5,
@@ -51,13 +37,6 @@ int16_t convertPotValToArmRadius(uint16_t potVal);
 int16_t convertPotValToTableSpeed(int16_t potVal);
 void moveArmToRadius(int8_t targetRadius, int16_t currentAngle);
 void moveArmToAngle(int16_t targetAngle, int16_t currentAngle);
-
-
-
-
-
-
-
 
 
 // this version of the homing sequence relies on standard timing functions. This only works because
@@ -174,94 +153,109 @@ inline int16_t armAngleToRadius(int16_t angleCounts)
   uint16_t absAngleCounts = abs(angleCounts);
   uint16_t intermediate = (81 * absAngleCounts) >> 9;
   return (angleCounts < 0) ? -1 * static_cast<int16_t>(intermediate) : static_cast<int16_t>(intermediate);
+}
 
-  // note that the above is functionally equivalent to the following:
-  // if (angleCounts < 0) {
-  //   return -1 * intermediate;
-  // } else {
-  //   return intermediate;
-  // }
+
+int16_t convertPotValToArmRadius(uint16_t potVal)
+{
+  constexpr uint8_t DEADBAND = 15;
+  potVal = (potVal < 512 + DEADBAND && potVal > 512 - DEADBAND) ? 512 : potVal; // add a bit of deadband
+  return map(potVal, 1023, 0, MAX_CONSTRAINED_RADIUS, -MAX_CONSTRAINED_RADIUS);
+}
+
+int16_t convertPotValToTableSpeed(int16_t potVal)
+{
+  constexpr uint8_t tableSpeedDeadband = 40;
+  // create a deadband in the potentiometer reading to account for noise around the detent
+  potVal = (potVal > 512 + tableSpeedDeadband || potVal < 512 - tableSpeedDeadband) ? potVal : 512;
+  int16_t speed = map(potVal, 0, 1023, -255, 255);
+  return speed;
 }
 
 
 
-
-
-
-
-/*
-// this returns the MIDI note number for any note from C-1 to G9 (MIDI notes 0 through 127).
-// Pass the note name as a string into the parameter. E.g., "D#-1" returns 3, or "F#2" returns 42.
-uint8_t noteNameToMIDINote(const char *noteName)
+void moveArmToAngle(int16_t targetAngle, int16_t currentAngle)
 {
-  // Arrays for natural and sharp notes
-  const char *naturalNotes[7] = {"C", "D", "E", "F", "G", "A", "B"};
-  const uint8_t naturalNoteBases[7] = {0, 2, 4, 5, 7, 9, 11};
-  const char *sharpNotes[5] = {"C", "D", "F", "G", "A"};
-  const uint8_t sharpNoteBases[5] = {1, 3, 6, 8, 10};
-
-  constexpr uint8_t OCTAVE = 12;
-
-  int8_t noteBaseIndex = -1; // Base index for the note
-  int8_t octaveNumber = 0;   // Octave number
-
-  // Check if the note is sharp or natural
-  if (noteName[1] == '#')
+  static EventDelay accelTimer;
+  static bool initialize = true;
+  constexpr uint8_t accelerationMultiplier = 1; // value added to last motor speed to cause acceleration
+  constexpr uint16_t accelerationInterval = 2;  // milliseconds between speed updates
+  // the first time this function is called, we need to initialize the timer to run at the appropriate interval
+  if (initialize)
   {
-    // Sharp note
-    for (int i = 0; i < 5; i++)
-    {
-      if (noteName[0] == sharpNotes[i][0])
-      {
-        noteBaseIndex = sharpNoteBases[i];
-        break;
-      }
-    }
-    if (noteBaseIndex == -1 || (noteName[2] != '-' && !isdigit(noteName[2])))
-      return 255; // Invalid note
-    // Handle negative octave
-    if (noteName[2] == '-')
-    {
-      octaveNumber = -1; // Convert char to int and make negative
-    }
-    else
-    {
-      octaveNumber = noteName[2] - '0'; // Convert char to int
-    }
+    accelTimer.set(accelerationInterval);
+    initialize = false;
+  }
+
+  static int16_t lastMotorSpeed = 0, targetMotorSpeed = 0;
+  constexpr uint8_t DEADBAND = 10; // if the current position is within this distance of the target, we reached the target
+  constexpr uint8_t maxMotorSpeed = 140;
+  static int8_t directionVector = 1;
+
+  int16_t displacement = targetAngle - currentAngle;
+
+  if (abs(displacement) <= DEADBAND)
+  {
+    targetMotorSpeed = 0;
   }
   else
   {
-    // Natural note
-    for (int i = 0; i < 7; i++)
+    if (accelTimer.ready())
     {
-      if (noteName[0] == naturalNotes[i][0])
-      {
-        noteBaseIndex = naturalNoteBases[i];
-        break;
-      }
-    }
-    if (noteBaseIndex == -1 || (noteName[1] != '-' && !isdigit(noteName[1])))
-      return 255; // Invalid note
-    // Handle negative octave
-    if (noteName[1] == '-')
-    {
-      octaveNumber = -(noteName[2] - '0'); // Convert char to int and make negative
-    }
-    else
-    {
-      octaveNumber = noteName[1] - '0'; // Convert char to int
+      directionVector = displacement > 0 ? 1 : -1;
+      targetMotorSpeed = constrain((accelerationMultiplier * directionVector) + lastMotorSpeed, -1 * maxMotorSpeed, maxMotorSpeed);
+
+      accelTimer.start();
     }
   }
-  // Calculate the MIDI note number
-  return (octaveNumber + 1) * OCTAVE + noteBaseIndex;
+  armMotor.setSpeed(targetMotorSpeed);
+  lastMotorSpeed = targetMotorSpeed;
 }
-*/
 
 
+void moveArmToRadius(int8_t targetRadius, int16_t currentAngle = 0)
+{
+  // I need to add a feature that cuts motor speed to 0 when end of range of arm motion is reached. I think sometimes it exceeds the
+  // range that works properly for the angle to distance calculator and causes odd behavior.
 
+  static EventDelay accelTimer;
+  static bool initialize = true;
+  constexpr uint8_t accelerationMultiplier = 4; // value added to last motor speed to cause acceleration
+  constexpr uint16_t accelerationInterval = 1;  // milliseconds between speed updates
+  // the first time this function is called, we need to initialize the timer to run at the appropriate interval
+  if (initialize)
+  {
+    accelTimer.set(accelerationInterval);
+    initialize = false;
+  }
 
+  static int16_t lastMotorSpeed = 0, targetMotorSpeed = 0;
+  static int16_t targetAngle = 0;
+  constexpr uint8_t DEADBAND = 10; // if the current position is within this distance of the target, we reached the target
+  constexpr uint8_t maxMotorSpeed = 128;
+  static int8_t directionVector = 1;
 
+  // handle motor acceleration
 
+  targetAngle = armRadiusToAngle(targetRadius);
+  int16_t displacement = targetAngle - currentAngle;
+
+  if (abs(displacement) <= DEADBAND)
+  {
+    targetMotorSpeed = 0;
+  }
+  else
+  {
+    if (accelTimer.ready())
+    {
+      directionVector = displacement > 0 ? 1 : -1;
+      targetMotorSpeed = constrain((accelerationMultiplier * directionVector) + lastMotorSpeed, -1 * maxMotorSpeed, maxMotorSpeed);
+      accelTimer.start();
+    }
+  }
+  armMotor.setSpeed(targetMotorSpeed);
+  lastMotorSpeed = targetMotorSpeed;
+}
 
 
 

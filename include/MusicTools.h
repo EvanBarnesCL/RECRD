@@ -39,51 +39,8 @@ uint8_t snapToNearestNote(uint8_t inputValue, const uint8_t notes[], uint8_t num
 void setFreqsFromChord(const Chord &chord, UFix<12, 15> &f1, UFix<12, 15> &f2, UFix<12, 15> &f3, UFix<12, 15> &f4);
 const char *getNoteFromArpeggio(const char *notes[], uint8_t numNotes, uint8_t selector);
 uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t *scaleNumbers, uint8_t manualIndex, int8_t offset, uint8_t arpMode, uint8_t arpSpread);
-void ambienceGenerator(); // right now i just want to wrap all the sound control stuff in a function so I can easily separate it out from the rest of updateControl()
-void toneBeatsGenerator();
+constexpr uint8_t noteNameToMIDINote(const char* noteName);
 
-
-
-
-
-
-
-// C#maj Pentatonic
-// const MIDI_NOTE scale_CPentatonicMajor[5] = {48, 50, 52, 55, 57};
-// Chord<5> scale_CPentatonicMajor((const char*){"C3", "D3", "E3", "G3", "A3"});
-
-
-// C harmonic major scale
-// const char *scale_CHarmonicMajor[] = {"C3", "D3", "E3", "F3", "G3", "G#3", "B3"};
-// const MIDI_NOTE scale_CHarmMajorMIDI[7] = {48, 50, 52, 53, 55, 56, 59};
-
-// Eb pentatonic minor scale
-// const char *scale_EbPentatonicMinor[5] = {"D#3", "F#3", "G#3", "A#3", "C#4"};
-// MIDI_NOTE scale_EbPentatonicMinorMIDI[5] = {51, 54, 56, 58, 61};
-
-// C Lydian scale
-// constexpr MIDI_NOTE root_CLydianScale = 48; // MIDI note number for C3
-// const MIDI_NOTE scale_CLydianMIDI[7] = {root_CLydianScale, root_CLydianScale + 2, root_CLydianScale + 4, root_CLydianScale + 6, root_CLydianScale + 7, root_CLydianScale + 9, root_CLydianScale + 11};
-
-// number of scales we'll be storing in the container
-// constexpr uint8_t NUM_SCALES = 3;
-
-// // array for storing the scales and another array for storing the associated note numbers
-// struct scaleStorage
-// {
-//   const uint8_t numScales = 3;
-//   uint8_t scaleSelector = 0;
-//   const MIDI_NOTE *scaleArray[NUM_SCALES] = {scale_EbPentatonicMinorMIDI, scale_CLydianMIDI, scale_CPentatonicMajor};
-//   const uint8_t numNotesInSelectedScale[3] = { // this calculates number of notes in each scale
-//       sizeof(scale_EbPentatonicMinorMIDI) / sizeof(scale_EbPentatonicMinorMIDI[0]),
-//       sizeof(scale_CLydianMIDI) / sizeof(scale_CLydianMIDI[0]),
-//       sizeof(scale_CPentatonicMajor) / sizeof(scale_CPentatonicMajor[0])};
-// };
-
-// scaleStorage scaleContainer;
-
-// const MIDI_NOTE *currentScale = scaleContainer.scaleArray[scaleContainer.scaleSelector];
-// uint8_t numNotesInScale = scaleContainer.numNotesInSelectedScale[scaleContainer.scaleSelector];
 
 
 constexpr uint8_t NUM_SCALES = 4;
@@ -118,21 +75,6 @@ struct ScaleStorage
 
 
 
-// uint8_t numNotesInScale = scaleContainer.selected().numNotes;
-
-/*
-Examples of how to use the ScaleStorage struct:
-
-Chord current = *myScales.selected();  // doesn't copy note data, just the 3-byte struct
-myScales.selectScale(2);               // changes current scale selection
-uint8_t note = myScales.selected().getNote(2);
-uint8_t count = myScales.selected().numNotes;
-
-myScales.nextScale();
-*/
-
-
-constexpr uint8_t noteNameToMIDINote(const char* noteName);
 
 constexpr uint8_t noteNameToMIDINote(const char* noteName)
 {
@@ -194,12 +136,117 @@ ScaleStorage scaleContainer = {
     0
 };
 
-
 Chord currentScale = scaleContainer.selected();
 
 
 
+// struct for storing parameters for each oscillator
+struct oscillatorParams
+{
+  const char *note = 0;
+  const char *lastNote = 0;
+  MIDI_NOTE noteMIDINumber = 0;
+  MIDI_NOTE lastNoteMIDINumber = 0;
+  float frequency = 0.0;
+  uint8_t volume = 0;
+};
 
+
+
+
+// Converts a MIDI note number into a string (const char*) note name. E.g., 42 -> F#2
+const char *MIDINoteToNoteName(uint8_t note)
+{
+  // Note names for one octave
+  const char *noteNames[] = {
+      "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+
+  if (note > 127)
+  {
+    return "Invalid"; // Return an error string for invalid MIDI numbers
+  }
+
+  // Determine octave
+  int8_t octave = (note / 12) - 1;
+  uint8_t noteIndex = note % 12;
+
+  // Allocate a static buffer to store the note string
+  static char noteStr[6]; // Max length: "A#-1" + null terminator = 5 bytes
+  snprintf(noteStr, sizeof(noteStr), "%s%d", noteNames[noteIndex], octave);
+
+  return noteStr;
+}
+
+
+
+// currently this can only set the frequencies from up to 4 notes, need to revise this to be more flexible. basically,
+// I want this to look at how many oscillators are active in the sketch, how many notes are in the chord, find the min()
+// of those two, and then iterate through the chord, converting notes to frequencies until the min() is reached.
+void setFreqsFromChord(const Chord &chord, UFix<12, 15> &f1, UFix<12, 15> &f2, UFix<12, 15> &f3, UFix<12, 15> &f4)
+{
+    UFix<12, 15>* freqs[] = {&f1, &f2, &f3, &f4};
+    for (uint8_t i = 0; i < 4; i++)
+    {
+        uint8_t note = chord.getNote(i);
+        *freqs[i] = (note < 128) ? mtof(UFix<7, 0>(note)) : 0;
+    }
+}
+
+
+
+/**
+ * I just realized I've been trying to use the arpeggiator function like a class, where each oscillator can call to it independently and get a unique note back.
+ * But that doesn't work, because the index is a static variable inside arpeggiator! So when I have one osc set to mode 0 (arp up), that increments the index
+ * to return a higher note in the scale each time it's called. But if I have another osc set to mode 1 (arp down), this decrements the index to try to create a falling
+ * arpeggio. These work fine on their own, but when both are active, they fight against each other over the index! This just made a kind of cool sound by accident that
+ * I might keep, but the arpeggiator does actually need to be a class in the long term that isn't a singleton like this. Although that was fun.
+ *
+ */
+
+/**
+ * arpMode:
+ * 0 - up loop
+ * 1 - down loop
+ * 2 - up-down-up loop
+ * 3 - random
+ * 4 - manual control of the note index
+ *
+ * arpSpread: how many octaves to add to the span of the baseline scale. setting to 1 will expand 1 octave higher.
+ *
+ * manualIndex: manually control which index in the array gets returned, instead of letting the automatic feature run. Value of
+ * 255 means let automatic mode take over.
+ *
+ * offset: signed number of steps up or down the scale to offset the output from the input, if direct input, or from the automatic progression
+ */
+uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t *scaleNumbers, uint8_t manualIndex = 255, int8_t offset = 0, uint8_t arpMode = 0, uint8_t arpSpread = 0)
+{
+  static uint8_t index = 0;
+  static uint8_t outputNote = 0;
+  index %= numNotesInScale; // safety feature to prevent overflowing array
+
+  switch (arpMode)
+  {
+  case 0:
+    outputNote = scaleNumbers[index];
+    ++index %= numNotesInScale; // always wrap around at the end of the arpeggio
+    break;
+  case 1:
+    outputNote = scaleNumbers[index];
+    index = (index == 0) ? numNotesInScale - 1 : index - 1;
+    break;
+  case 2:
+    break;
+  case 3:
+    break;
+  case 4:
+    manualIndex = (manualIndex + offset) % numNotesInScale;
+    outputNote = scaleNumbers[manualIndex];
+  default:
+    break;
+  }
+
+  return outputNote;
+}
 
 
 #endif

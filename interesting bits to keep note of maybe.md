@@ -421,3 +421,71 @@ void ambienceGenerator() {
 }
 
 */
+
+
+
+
+
+
+
+
+
+// pass in a list of notes and get back a single note, e.g.:
+// const char* arpeggio[] = {"A4", "C#2", "D5"};
+// const char* newNote = getNoteFromArpeggio(arpeggio, 3, 0);   // should result in newNote equaling "A4"
+const char *getNoteFromArpeggio(const char *notes[], uint8_t numNotes, uint8_t selector)
+{
+  if (selector < numNotes)
+  {
+    return notes[selector];
+  }
+  else
+  {
+    return " ";
+  }
+}
+
+
+
+
+
+// takes an input value (range 0 to 127) and snaps it to the nearest note in a provided scale
+// pass the notes in as MIDI note numbers, not note names
+uint8_t snapToNearestNote(uint8_t inputValue, const uint8_t notes[], uint8_t numNotes)
+{
+  uint8_t minimumDistance = 255; // The smallest distance found between inputValue and a MIDI note
+  uint8_t minDistanceNote = 0;   // The corresponding nearest MIDI note
+
+  // Iterate through the scale notes to find the nearest one
+  for (uint8_t i = 0; i < numNotes; i++)
+  {
+    uint8_t distance = abs(inputValue - notes[i]);
+
+    if (distance < minimumDistance)
+    {
+      minimumDistance = distance;
+      minDistanceNote = notes[i];
+    }
+  }
+
+  return minDistanceNote;
+}
+
+
+
+// convert an array of note names into an array of MIDI note numbers
+void convertArray_NoteNamesToNumbers(const char *noteNames[], uint8_t numNotes, uint8_t midiNotes[])
+{
+  for (uint8_t i = 0; i < numNotes; i++)
+  {
+    midiNotes[i] = noteNameToMIDINote(noteNames[i]);
+  }
+}
+
+void convertArray_NoteNumbersToNames(const uint8_t midiNotes[], uint8_t numNotes, const char *noteNames[])
+{
+  for (uint8_t i = 0; i < numNotes; i++)
+  {
+    noteNames[i] = MIDINoteToNoteName(midiNotes[i]);
+  }
+}
