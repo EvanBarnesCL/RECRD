@@ -30,15 +30,14 @@ EventDelay k_i2cUpdateDelay;
 
 // ArmManager must be included AFTER <Mozzi.h> because it uses EventDelay, which
 // depends on Mozzi internals. ArmManager is header-only for exactly this reason.
-#include <ArmManager.h>
-#include <TableManager.h>
-#include <AnalogButtons.h>
+#include <ArmManager.h>     // data and functions that manage the sensor arm
+#include <TableManager.h>   // data and functions that manage the table
+#include <AnalogButtons.h>  // data and functions that manage the three pushbuttons
 
 ArmManager arm;
 TableManager table;
 
-// LED_PIN belongs here rather than in either manager class — it drives the
-// color sensor illumination LEDs on the arm, controlled from main.cpp.
+// define the pin that the LED PWM control happens on. 
 constexpr uint8_t LED_PIN = 11;
 
 
@@ -64,13 +63,30 @@ uint8_t brightnessIterator = 3; // default to brightness level 3 on startup
  * 6 bytes of RAM, that was worth it. To understand how it works, see the section
  * [[#how LED brightness PWM values are calculated]] in Footnotes.md
  */
-constexpr uint16_t LEDBrightnessSequence = 0b1000011000100001;
-inline uint8_t getBrightness(uint8_t level = 3)
-{
-    return static_cast<uint8_t>(
-        (level == 0) ? 0 : ((((LEDBrightnessSequence >> (4 * (level - 1))) & 0xF) << 5) - 1)
-    );
-}
+#define USE_BRIGHTNESS_ARRAY 1
+
+#if USE_BRIGHTNESS_ARRAY
+  // Brightness levels stored in PROGMEM to avoid consuming SRAM. pgm_read_byte()
+  // is required to fetch values from program memory on AVR — you can't dereference
+  // a PROGMEM pointer directly.
+  const uint8_t PROGMEM LEDBrightnessLevels[NUM_BRIGHTNESS_LEVELS] = {0, 31, 63, 191, 255};
+  inline uint8_t getBrightness(uint8_t level = 3)
+  {
+      return pgm_read_byte(&LEDBrightnessLevels[level]);
+  }
+#else
+  // Each nibble in LEDBrightnessSequence encodes one brightness level as n,
+  // where the actual PWM value is (n << 5) - 1. Level 0 is special-cased to 0
+  // since (0 << 5) - 1 would underflow. The four nibbles pack levels 1-4
+  // into a single uint16_t constant with zero RAM cost.
+  constexpr uint16_t LEDBrightnessSequence = 0b1000011000100001;
+  inline uint8_t getBrightness(uint8_t level = 3)
+  {
+      return static_cast<uint8_t>(
+          (level == 0) ? 0 : ((((LEDBrightnessSequence >> (4 * (level - 1))) & 0xF) << 5) - 1)
+      );
+  }
+#endif
 
 
 // **********************************************************************************
@@ -89,6 +105,11 @@ uint8_t buttonPressed = 255; // 255 = no button pressed, 0/1/2 = which button
 // Mozzi stuff
 // **********************************************************************************
 
+// this sets the frequency that the updateControl() function gets called. Currently this sets it to be called
+// at 128 times per second. Setting it faster (e.g., to 256) would improve the response speed of the program
+// to changes in sensor data or to user input, but the tradeoff is that doing so reduces processing time 
+// available for making sound. If you hear glitchiness in the audio you're making, try setting this to a lower
+// value to create less interruptions for the sound synthesizer. Note that this number must always be a power of 2.
 #define MOZZI_CONTROL_RATE 128
 
 Oscil<TRIANGLE_DIST_CUBED_2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc0(TRIANGLE_DIST_CUBED_2048_DATA);
@@ -97,15 +118,21 @@ Oscil<TRIANGLE_VALVE_2_2048_NUM_CELLS,    MOZZI_AUDIO_RATE> osc2(TRIANGLE_VALVE_
 
 
 // **********************************************************************************
-// Music stuff
+// Music Generation Control Stuff
 // **********************************************************************************
 
-#include <MusicTools.h>
+// Include the MusicTypes header, which defines MIDI_NOTE and Chord. 
+#include <MusicTypes.h>
+// Contains tools useful for converting music information into oscillator parameters and things
+#include <OscillatorTools.h>
 
+// create structs for storing parameters for each oscillator
 oscillatorParams osc0Params, osc1Params, osc2Params;
 
+// create portamento objects so we can glide from one note to another
 Portamento<MOZZI_CONTROL_RATE> osc0Portamento, osc1Portamento, osc2Portamento;
 
+// create ADSR envelopes to make each note fade in and out.
 ADSR<MOZZI_CONTROL_RATE, MOZZI_CONTROL_RATE> osc0AmpEnv, osc1AmpEnv, osc2AmpEnv;
 
 // Mozzi EventDelay timers, used instead of millis() for timing
@@ -121,10 +148,42 @@ bool enableButton2Mode = false, previousEnableButton2Mode = false;
 uint8_t lastButtonMode = 0, currentButtonMode = 0;
 
 
+
 // **********************************************************************************
-// Sound Generator Stuff
+// Musical Chords, Scales, and Sound Generators
 // **********************************************************************************
 
+// First, define the number of scales we're going to use
+constexpr uint8_t NUM_SCALES = 4;
+
+// Then include the MusicTools header, which includes functions that are musically useful for composition and things.
+#include <MusicTools.h>
+
+// This is a macro that makes it easy to define a new Chord object. Chords in the context of this program are just collections
+// of note data. They can be up to 256 notes, and you can use them as chords, scales, arpeggios, melodies, or however you want.
+// See MusicTools.h to see how this macro is constructed.
+DEFINE_CHORD(scale_CPentatonicMajor, N("C3"), N("D3"), N("E3"), N("G3"), N("A3"));
+
+DEFINE_CHORD(scale_CHarmonicMajor, N("C3"), N("D3"), N("E3"), N("F3"), N("G3"), N("G#3"), N("B3"));
+
+DEFINE_CHORD(scale_EbPentatonicMinorMIDI, N("D#3"), N("F#3"), N("G#3"), N("A#3"), N("C#4"));
+
+// You can also define chords as a collection of MIDI note numbers directly, instead of using the 'N("D#3")' notation from above,
+// which converts note names to MIDI note numbers for you.
+
+constexpr MIDI_NOTE root_CLydianScale = 48; // MIDI note number for C3
+DEFINE_CHORD(scale_CLydian, root_CLydianScale, root_CLydianScale + 2, root_CLydianScale + 4, root_CLydianScale + 6, root_CLydianScale + 7, root_CLydianScale + 9, root_CLydianScale + 11);
+
+// Put all of your scales into a single container so that we can iterate through them with one of the front panel buttons
+ScaleStorage scaleContainer = {
+    {&scale_CPentatonicMajor, &scale_CHarmonicMajor, &scale_EbPentatonicMinorMIDI, &scale_CLydian},   // this is the array of scales
+    0                                                                                                 // this is the index of the currently selected scale
+};
+
+// set up a Chord object with the data for the first selected chord from the container.
+Chord currentScale = scaleContainer.selected();
+
+// function prototype for the function that will actually generate sounds from color data
 void ambienceGenerator();
 
 
@@ -139,6 +198,7 @@ void setup()
   SERIAL_BEGIN(115200);
   SERIAL_PRINTLN("starting");
 
+  // start I2C
   Wire.begin();
 
   // Initialize the table encoder and arm encoder, then home the arm.
@@ -177,7 +237,10 @@ void setup()
 
   // Change the PWM frequency on the motor control pins to push it above audible range.
   // After this line, millis() and delay() are unreliable. Use Mozzi EventDelay instead.
-  setPwmFrequency(5, 1); // sets Timer0 clock divisor to 1 instead of 64
+  if (USE_FAST_PWM)
+  {
+    setPwmFrequency(5, 1); // sets Timer0 clock divisor to 1 instead of 64
+  }
 
   // EXPERIMENTAL: PWM dimming for the color sensor LEDs. Changing Timer 2's clock divisor
   // could affect Mozzi functions, but hasn't caused problems in testing so far.
@@ -188,19 +251,31 @@ void setup()
   }
   else
   {
-    digitalWrite(LED_PIN, HIGH);
+    digitalWrite(LED_PIN, HIGH);  // just turn the LEDs on full brightness
   }
 
+  // set some starting frequencies for the oscillators
   osc0.setFreq(mtof(noteNameToMIDINote("E2")));
   osc1.setFreq(mtof(noteNameToMIDINote("A3")));
   osc2.setFreq(mtof(noteNameToMIDINote("B4")));
 
+  // Start the timer that controls how frequently the I2C sensors get polled. The sensors are updated
+  // one at a time in updateControl() — arm encoder, table encoder, then color sensor, cycling through
+  // in sequence. I2C_UPDATE_INTERVAL is defined in Configuration.h, and is currently set to 15ms.
+  // That means each individual sensor gets a fresh reading every 45ms (3 sensors * 15ms). Updating
+  // more frequently gives you more responsive control, but I2C reads block the processor, so polling
+  // too aggressively will steal time from Mozzi's audio generation and cause audible glitching.
+  // After this call, the timer is restarted at the end of each sensor read in updateControl() rather
+  // than running on a fixed schedule, so the interval represents minimum time between reads, not a
+  // strict period.
   k_i2cUpdateDelay.set(I2C_UPDATE_INTERVAL);
 
+  // set the initial attack and decay levels for the oscillators (basically fade in and fade out)
   osc0AmpEnv.setADLevels(160, 140);
   osc1AmpEnv.setADLevels(80, 60);
   osc2AmpEnv.setADLevels(160, 140);
 
+  // finally, start Mozzi!
   startMozzi(MOZZI_CONTROL_RATE);
 }
 

@@ -1,49 +1,18 @@
 #ifndef MUSICTOOLS_H
 #define MUSICTOOLS_H
 #include <Arduino.h>
+#include <MusicTypes.h>
 #include <FixMath.h>
 
-
-// typedef uint8_t MIDI_NOTE;
-using MIDI_NOTE = uint8_t; // just for readability elsewhere, I'm creating an alias called MIDI_NOTE that is just uint8_t datatype.
-
-// an array of 4 pointers to const char* strings that define up to four notes in a chord
-// struct Chord
-// {
-//   const char *notes[4];
-// };
-
-
-struct Chord {
-    const uint8_t* notes;   // pointer to PROGMEM array
-    uint8_t numNotes;
-
-    uint8_t getNote(uint8_t index) const {
-        if (index >= numNotes) return 255;
-        return pgm_read_byte(&notes[index]);
-    }
-};
-
-// function prototypes
-//
-//original
-// uint8_t noteNameToMIDINote(const char *noteName); // convert note names to MIDI note numbers (e.g., F#2 -> 42)
-
-// new test
-
-
-const char *MIDINoteToNoteName(uint8_t note);     // convert MIDI note to note name (e.g., 42 -> F#2)
-void convertArray_NoteNumbersToNames(const uint8_t midiNotes[], uint8_t numNotes, const char *noteNames[]);   // this converts whole arrays, which I think I can actually avoid
-void convertArray_NoteNamesToNumbers(const char *noteNames[], uint8_t numNotes, uint8_t midiNotes[]);
-uint8_t snapToNearestNote(uint8_t inputValue, const uint8_t notes[], uint8_t numNotes);
+// const char *MIDINoteToNoteName(MIDI_NOTE note);     // convert MIDI note to note name (e.g., 42 -> F#2)
+// void convertArray_NoteNumbersToNames(const uint8_t midiNotes[], uint8_t numNotes, const char *noteNames[]);   // this converts whole arrays, which I think I can actually avoid
+// void convertArray_NoteNamesToNumbers(const char *noteNames[], uint8_t numNotes, uint8_t midiNotes[]);
+// uint8_t snapToNearestNote(uint8_t inputValue, const uint8_t notes[], uint8_t numNotes);
 void setFreqsFromChord(const Chord &chord, UFix<12, 15> &f1, UFix<12, 15> &f2, UFix<12, 15> &f3, UFix<12, 15> &f4);
-const char *getNoteFromArpeggio(const char *notes[], uint8_t numNotes, uint8_t selector);
-uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t *scaleNumbers, uint8_t manualIndex, int8_t offset, uint8_t arpMode, uint8_t arpSpread);
+// const char *getNoteFromArpeggio(const char *notes[], uint8_t numNotes, uint8_t selector);
+// uint8_t arpeggiator(uint8_t numNotesInScale, const uint8_t *scaleNumbers, uint8_t manualIndex, int8_t offset, uint8_t arpMode, uint8_t arpSpread);
 constexpr uint8_t noteNameToMIDINote(const char* noteName);
 
-
-
-constexpr uint8_t NUM_SCALES = 4;
 
 struct ScaleStorage
 {
@@ -115,42 +84,14 @@ constexpr uint8_t noteNameToMIDINote(const char* noteName)
     return (octaveNumber + 1) * OCTAVE + noteBaseIndex;
 }
 
-#define DEFINE_CHORD(name, ...)                                         \
-    constexpr uint8_t name##_data[] PROGMEM = {__VA_ARGS__};               \
+
+
+// this macro makes it really easy to define a new Chord instance with any number of notes up to 256
+#define DEFINE_CHORD(name, ...) \
+    constexpr MIDI_NOTE name##_data[] PROGMEM = {__VA_ARGS__}; \
     constexpr Chord name = {name##_data, sizeof(name##_data)}
 
 #define N(s) noteNameToMIDINote(s)
-
-DEFINE_CHORD(scale_CPentatonicMajor, N("C3"), N("D3"), N("E3"), N("G3"), N("A3"));
-
-DEFINE_CHORD(scale_CHarmonicMajor, N("C3"), N("D3"), N("E3"), N("F3"), N("G3"), N("G#3"), N("B3"));
-
-DEFINE_CHORD(scale_EbPentatonicMinorMIDI, N("D#3"), N("F#3"), N("G#3"), N("A#3"), N("C#4"));
-
-constexpr MIDI_NOTE root_CLydianScale = 48; // MIDI note number for C3
-DEFINE_CHORD(scale_CLydian, root_CLydianScale, root_CLydianScale + 2, root_CLydianScale + 4, root_CLydianScale + 6, root_CLydianScale + 7, root_CLydianScale + 9, root_CLydianScale + 11);
-
-
-ScaleStorage scaleContainer = {
-    {&scale_CPentatonicMajor, &scale_CHarmonicMajor, &scale_EbPentatonicMinorMIDI, &scale_CLydian},
-    0
-};
-
-Chord currentScale = scaleContainer.selected();
-
-
-
-// struct for storing parameters for each oscillator
-struct oscillatorParams
-{
-  const char *note = 0;
-  const char *lastNote = 0;
-  MIDI_NOTE noteMIDINumber = 0;
-  MIDI_NOTE lastNoteMIDINumber = 0;
-  float frequency = 0.0;
-  uint8_t volume = 0;
-};
-
 
 
 
@@ -179,18 +120,6 @@ const char *MIDINoteToNoteName(uint8_t note)
 
 
 
-// currently this can only set the frequencies from up to 4 notes, need to revise this to be more flexible. basically,
-// I want this to look at how many oscillators are active in the sketch, how many notes are in the chord, find the min()
-// of those two, and then iterate through the chord, converting notes to frequencies until the min() is reached.
-void setFreqsFromChord(const Chord &chord, UFix<12, 15> &f1, UFix<12, 15> &f2, UFix<12, 15> &f3, UFix<12, 15> &f4)
-{
-    UFix<12, 15>* freqs[] = {&f1, &f2, &f3, &f4};
-    for (uint8_t i = 0; i < 4; i++)
-    {
-        uint8_t note = chord.getNote(i);
-        *freqs[i] = (note < 128) ? mtof(UFix<7, 0>(note)) : 0;
-    }
-}
 
 
 
