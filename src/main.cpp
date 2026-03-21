@@ -425,24 +425,36 @@ void loop()
 
 void ambienceGenerator()
 {
-  static int8_t arpIndex = 0;
-  static uint8_t numNotesLeftInArp = 0;
-  static bool initialize = true;
+  static int8_t arpIndex = 0;                   // used to select notes in a scale to play as an arpeggio
+  static uint8_t numNotesLeftInArp = 0;         // arpeggios only play for a limited number of notes
+  static bool initialize = true;                // used to initialize some things the first time this function is called
 
-  static uint16_t osc2PortTime = 20;
+  static uint16_t osc2PortTime = 20;            // portamento value 
 
   const bool USE_PORTAMENTO = true;
 
   static uint16_t attack = 100, decay = 500, sustain = 8000, release = 3000;
 
+  // used to move a musical note up or down by an octave. mappedWhite is the 8 bit autoMapped value
+  // of the white light color channel, and the >> 6 operator performs a right shift, where it takes
+  // all 8 bits in a number and literally moves them right, filling in with 0s on the left. This moves
+  // 6 places to the right, so it reduces an 8 bit number to a 2 bit number, which can represent the
+  // numbers 0 through 3. It's basically a way of dividing 256 by 64, but it's a much faster operation.
+  // the microcontroller has hardware purpose-built for performing bit shift operations, and it only 
+  // takes a single clock cycle. divisions is incredibly slow on this microcontroller, and might need
+  // something like 40 clock cycles.
   int8_t octaveShifter = (int8_t)(mappedWhite >> 6);
   static bool arpeggiate = false, arpStarted = false, arpOnTimeOut = true;
 
+  // button2mode is basically arpeggiating each oscillator, instead of holding sustained notes. 
+  // baseNoteInterval is the starting point for how much time should elapse between triggering notes
+  // in this mode. This gets modified by the value of the green color channel in button2mode.
   static uint8_t baseNoteInterval = 64;
 
   if (!enableButton2Mode && previousEnableButton2Mode)
     initialize = true; // transition out of button mode 2 requires resetting ADSRs
 
+  // on first call, we need to set some things up
   if (initialize)
   {
     osc0AmpEnv.setADLevels(160, 140);
@@ -454,15 +466,27 @@ void ambienceGenerator()
     initialize = false;
   }
 
+  // button2mode is basically arpeggiating each oscillator, instead of holding sustained notes
   if (enableButton2Mode)
   {
+    // if we weren't already in button2Mode, we need to set some things up first
     if (!previousEnableButton2Mode)
     {
+      // change the ADSR to make the notes sound plucky
       osc0AmpEnv.setTimes(5, 50, 100, 200);
       osc1AmpEnv.setTimes(5, 50, 100, 200);
       osc1AmpEnv.setADLevels(60, 40);
       osc2AmpEnv.setTimes(5, 50, 100, 200);
 
+      // start the timer objects that will determine how often we should play a note
+      // notes are triggered more or less frequently based on the value of the green color channel.
+      // so we start with that baseNoteInterval, and then change it based on the green channel.
+      // the right shift operations drop the value of the green channel to a max of 4 bits, so a
+      // maximum of (2^4) - 1 = 15. The max() function call is there to add a lower. There is a chance
+      // that the bit shift would create a value of 0, and then we'd be multiplying the base interval
+      // by 0, which means constantly retriggering the note (which would result in a silent note because
+      // the ADSR would constantly restart). So we multiply the base interval by a number between 1 and 15, 
+      // so the base interval ranges from 64ms to 15*64ms = 960ms. 
       osc0ButtonMode2NoteTimer.set(max(1, mappedGreen >> 4) * baseNoteInterval);
       osc0ButtonMode2NoteTimer.start();
       osc1ButtonMode2NoteTimer.set(max(1, mappedGreen >> 4) * baseNoteInterval * 2);
@@ -471,10 +495,20 @@ void ambienceGenerator()
       osc2ButtonMode2NoteTimer.start();
     }
 
-    baseNoteInterval = (mappedWhite >> 5) * 16;
+    // the base note interval starts at 64, but now it gets modified by the value of the white color channel
+    baseNoteInterval = max(1, (mappedWhite >> 5)) * 16; // evaluates to a range between 16 and 7*16 = 112
 
+    // check to see if we're ready to trigger a note for osc0
     if (osc0ButtonMode2NoteTimer.ready())
     {
+      // this is a fun way to add some randomness and also modulate the effect of the randomness with a sensor reading.
+      // first we generate a random number between 1 and 255. If that number is less than the current value of the red
+      // color channel sensor reading, then we trigger a new note. So what this means is that the more red light the sensor
+      // sees, the more frequently we'll trigger a note! If there's absolutely no red light (mappedRed == 0), then we'll
+      // never trigger a note because rand(256) will never return a number less than 0. I you want to tune the behavior
+      // of this, change the constraints on the random number. For example, you could change to rand(128), which should
+      // make notes trigger a lot more often. Or move the range up so that only extremely bright red light values trigger
+      // a note by using something like rand(192, 256).
       if (rand(256) < mappedRed)
       {
         switch (scaleContainer.selected().numNotes)
@@ -489,13 +523,16 @@ void ambienceGenerator()
             break;
         }
       }
+      // turn the note on
       osc0AmpEnv.noteOn();
       osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
       osc0.setFreq(osc0Params.frequency);
+      // reset the timer
       osc0ButtonMode2NoteTimer.set(max(1, mappedGreen >> 4) * baseNoteInterval);
       osc0ButtonMode2NoteTimer.start();
     }
 
+    // now do the same thing for osc1
     if (osc1ButtonMode2NoteTimer.ready())
     {
       if (rand(256) < mappedGreen)
@@ -518,7 +555,7 @@ void ambienceGenerator()
       osc1ButtonMode2NoteTimer.set(max(1, mappedBlue >> 4) * baseNoteInterval * 2);
       osc1ButtonMode2NoteTimer.start();
     }
-
+    // and do the same for osc2
     if (osc2ButtonMode2NoteTimer.ready())
     {
       if (rand(256) < mappedBlue)
@@ -549,20 +586,31 @@ void ambienceGenerator()
     osc1Params.volume = osc1AmpEnv.next();
     osc2Params.volume = osc2AmpEnv.next();
   }
-  else
-  {
-    octaveShifter = max(-1, octaveShifter - 2); // constrains to -1, 0, or 1
 
+  else  // we're not in button 2 mode in this case
+  
+  {
+    // octaveShifter is currently some value between 0 and 3. This moves and constrains it
+    // to be either -1, 0, or 1.
+    octaveShifter = max(-1, octaveShifter - 2); 
+
+    // we'll occasionally trigger an arpeggio if the white light channel is bright enough, but to prevent
+    // that from happening too frequently, we use this timer to prevent a new arpeggio triggering too soon
+    // after the last one. 
     if (arpTimeout.ready())
     {
       arpOnTimeOut = false;
     }
 
+    // this makes sure that arpeggios only get triggered if the octave has been shifted up by 1. I did this
+    // to add some brightness to the sound. Basically the arpeggio triggers if the white light channel is
+    // bright enough, and I wanted the arpeggio sound to mirror that brightness by being shifted up an octave.
     if (octaveShifter > 0 && !arpOnTimeOut && !arpStarted)
     {
-      arpeggiate = (rand(256) <= mappedWhite) ? true : false;
+      arpeggiate = (rand(256) <= mappedWhite) ? true : false; // add some randomness so that we don't always trigger an arp
     }
 
+    // choose white note in the scale we'll be using based on the value of the green channel
     uint8_t i = 0;
     if (scaleContainer.selected().numNotes == 7)
     {
@@ -573,6 +621,7 @@ void ambienceGenerator()
       i = colorToScaleNote5(mappedGreen);
     }
 
+    //
     osc0Params.noteMIDINumber = scaleContainer.selected().getNote(i);
     if (osc0Params.lastNoteMIDINumber != osc0Params.noteMIDINumber)
     {
