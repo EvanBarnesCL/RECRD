@@ -140,8 +140,8 @@ EventDelay chordTimer, arpDurationTimer, arpNoteTimer, arpTimeout;
 EventDelay osc0ButtonMode2NoteTimer, osc1ButtonMode2NoteTimer, osc2ButtonMode2NoteTimer;
 
 // IntMaps for squashing scaled color data down to fit a musical scale.
-const IntMap colorToScaleNote7(0, 255, 0, 7); // for 7-note scales
-const IntMap colorToScaleNote5(0, 255, 0, 5); // for 5-note scales
+const IntMap colorToScaleNote7(0, 256, 0, 7); // for 7-note scales
+const IntMap colorToScaleNote5(0, 256, 0, 5); // for 5-note scales
 
 // variables related to the buttons
 bool enableButton2Mode = false, previousEnableButton2Mode = false;
