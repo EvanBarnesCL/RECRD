@@ -162,7 +162,7 @@ DEFINE_CHORD(scale_CLydian, root_CLydianScale, root_CLydianScale + 2, root_CLydi
              root_CLydianScale + 6, root_CLydianScale + 7, root_CLydianScale + 9, root_CLydianScale + 11);
 
 ScaleStorage scaleContainer = {
-    {&scale_CPentatonicMajor, &scale_CHarmonicMajor, &scale_EbPentatonicMinorMIDI, &scale_CLydian},
+    {&scale_EbPentatonicMinorMIDI, &scale_CPentatonicMajor, &scale_CHarmonicMajor, &scale_CLydian},
     0
 };
 
@@ -417,10 +417,10 @@ void ambienceGenerator()
 
   static uint16_t attack = 100, decay = 500, sustain = 8000, release = 3000;
 
-  int8_t octaveShifter = (int8_t)(mappedWhite >> 6);
+  int8_t octaveShifter = (int8_t)(mappedWhite >> 6);  // mappedWhite is 8 bit, this cuts it down to 2 (range 0-3).
   static bool arpeggiate = false, arpStarted = false, arpOnTimeOut = true;
 
-  static uint8_t baseNoteInterval = 64;
+  static uint8_t baseNoteInterval = 64; // baseline amount of time that an arp note will be turned on for, gets modified by sensor readings
 
   if (!enableButton2Mode && previousEnableButton2Mode)
     initialize = true;
@@ -534,39 +534,49 @@ void ambienceGenerator()
 
   else
   {
+    // this constrains the amount that the octave can be shifted up or down to either -1, 0, or +1 octaves
     octaveShifter = max(-1, octaveShifter - 2);
-
+    // this makes it so that there is a minimum amount of time between arpeggios
     if (arpTimeout.ready())
     {
       arpOnTimeOut = false;
     }
 
+    // if an arpeggio is allowed to start, use a bit of randomness to determine if one actually will start.
+    // the more white light there is, the more likely the arpeggio is.
     if (octaveShifter > 0 && !arpOnTimeOut && !arpStarted)
     {
-      arpeggiate = (rand(256) <= mappedWhite) ? true : false;
+      arpeggiate = (rand(256) <= mappedWhite) ? true : false; // could use something like rand(128) to force more arpeggios
     }
 
+    // create an index to pick a note out of the scale
     uint8_t i = 0;
     if (scaleContainer.selected().numNotes == 7)
     {
-      i = colorToScaleNote7(mappedGreen);
+      i = colorToScaleNote7(mappedGreen);   // this is an IntMap
     }
     else
     {
-      i = colorToScaleNote5(mappedGreen);
+      i = colorToScaleNote5(mappedGreen);   // IntMap
     }
 
+    // get the actual note from the scale
     osc0Params.noteMIDINumber = scaleContainer.selected().getNote(i);
+    // if the note has changed, restart the note playback
     if (osc0Params.lastNoteMIDINumber != osc0Params.noteMIDINumber)
     {
       osc0AmpEnv.noteOn();
       osc0Params.lastNoteMIDINumber = osc0Params.noteMIDINumber;
     }
+    // calculate the frequency of the oscillator
     osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
+    // set the oscillator to the calculated frequency
     osc0.setFreq((osc0Params.frequency));
+    // update the amp envelope (restarts with a a new noteOn() call)
     osc0AmpEnv.update();
     osc0Params.volume = osc0AmpEnv.next();
 
+    // 
     uint8_t j = 0;
     if (scaleContainer.selected().numNotes == 7)
     {
@@ -583,10 +593,10 @@ void ambienceGenerator()
       osc1Params.noteMIDINumber = scaleContainer.selected().getNote((j + 4) % scaleContainer.selected().numNotes) - 12;
       break;
     case 1:
-      osc1Params.noteMIDINumber = scaleContainer.selected().getNote((i + 2) % scaleContainer.selected().numNotes) + octaveShifter * 12;
+      osc1Params.noteMIDINumber = scaleContainer.selected().getNote((j + 2) % scaleContainer.selected().numNotes) + octaveShifter * 12;
       break;
     case 2:
-      osc1Params.noteMIDINumber = scaleContainer.selected().getNote((i)) - 12;
+      osc1Params.noteMIDINumber = scaleContainer.selected().getNote((j)) - 12;
       break;
     default:
       break;
