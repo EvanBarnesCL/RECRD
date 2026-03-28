@@ -149,7 +149,7 @@ bool enableButton2Mode = false, previousEnableButton2Mode = false;
 // Musical Scales
 // **********************************************************************************
 
-constexpr uint8_t NUM_SCALES = 4;
+constexpr uint8_t NUM_SCALES = 3;
 
 #include <MusicTools.h>
 
@@ -162,8 +162,8 @@ DEFINE_CHORD(scale_CLydian, root_CLydianScale, root_CLydianScale + 2, root_CLydi
              root_CLydianScale + 6, root_CLydianScale + 7, root_CLydianScale + 9, root_CLydianScale + 11);
 
 ScaleStorage scaleContainer = {
-    {&scale_EbPentatonicMinorMIDI, &scale_CPentatonicMajor, &scale_CHarmonicMajor, &scale_CLydian},
-    0
+    {&scale_EbPentatonicMinorMIDI, &scale_CLydian, &scale_CPentatonicMajor}, // &scale_CHarmonicMajor},
+    0 // index of currently selected scale
 };
 
 Chord currentScale = scaleContainer.selected();
@@ -485,10 +485,10 @@ void ambienceGenerator()
         switch (scaleContainer.selected().numNotes)
         {
           case 7:
-            osc1Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote7(mappedGreen)) + ((int8_t)rand(-1, 2) * 12);
+            osc1Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote7(mappedBlue)) + ((int8_t)rand(-1, 2) * 12);
             break;
           case 5:
-            osc1Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote5(mappedGreen)) + ((int8_t)rand(-1, 2) * 12);
+            osc1Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote5(mappedBlue)) + ((int8_t)rand(-1, 2) * 12);
             break;
           default:
             break;
@@ -508,10 +508,10 @@ void ambienceGenerator()
         switch (scaleContainer.selected().numNotes)
         {
           case 7:
-            osc2Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote7(mappedGreen)) + ((int8_t)rand(-1, 2) * 12);
+            osc2Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote7(mappedRed)) + ((int8_t)rand(-1, 2) * 12);
             break;
           case 5:
-            osc2Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote5(mappedGreen)) + ((int8_t)rand(-1, 2) * 12);
+            osc2Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote5(mappedRed)) + ((int8_t)rand(-1, 2) * 12);
             break;
           default:
             break;
@@ -593,7 +593,7 @@ void ambienceGenerator()
       osc1Params.noteMIDINumber = scaleContainer.selected().getNote((j + 4) % scaleContainer.selected().numNotes) - 12;
       break;
     case 1:
-      osc1Params.noteMIDINumber = scaleContainer.selected().getNote((j + 2) % scaleContainer.selected().numNotes) + octaveShifter * 12;
+      osc1Params.noteMIDINumber = scaleContainer.selected().getNote((i + 2) % scaleContainer.selected().numNotes) + octaveShifter * 12;
       break;
     case 2:
       osc1Params.noteMIDINumber = scaleContainer.selected().getNote((j)) - 12;
