@@ -40,9 +40,6 @@ public:
     // -------------------------------------------------------------------------
     // Pin assignments
     // -------------------------------------------------------------------------
-    static constexpr uint8_t SPEED_PIN = 6;
-    static constexpr uint8_t DIR_PIN   = 7;
-
     /// Maximum absolute radius the arm is allowed to move to during normal operation (mm).
     static constexpr uint8_t MAX_CONSTRAINED_RADIUS = 75;
 
@@ -50,8 +47,8 @@ public:
     // Constructor
     // -------------------------------------------------------------------------
 
-    ArmManager()
-        : _motor(SPEED_PIN, DIR_PIN, 50, true),
+    ArmManager(uint8_t speedPin, uint8_t dirPin)
+        : _motor(speedPin, dirPin, 50, true),
           _currentAngle(0),
           _currentPosition(0),
           _angleLastSpeed(0),

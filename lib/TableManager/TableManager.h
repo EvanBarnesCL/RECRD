@@ -37,16 +37,10 @@ class TableManager
 {
 public:
     // -------------------------------------------------------------------------
-    // Pin assignments
-    // -------------------------------------------------------------------------
-    static constexpr uint8_t SPEED_PIN = 5;
-    static constexpr uint8_t DIR_PIN   = 4;
-
-    // -------------------------------------------------------------------------
-    // Lifecycle
+    // Constructor
     // -------------------------------------------------------------------------
 
-    TableManager();
+    TableManager(uint8_t speedPin, uint8_t dirPin);
 
     /**
      * @brief Initializes the table encoder. Call in setup().
@@ -59,7 +53,7 @@ public:
 
     /**
      * @brief Updates the target motor speed from a 10-bit ADC pot reading.
-     *
+ *
      * If the table has been stopped by the user, this is a no-op — the target
      * speed stays at zero until the table moves again (detected in updateAngle()).
      * Call this every updateControl() cycle.

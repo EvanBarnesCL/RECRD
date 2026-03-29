@@ -4,8 +4,8 @@
 // Constructor
 // -----------------------------------------------------------------------------
 
-TableManager::TableManager()
-    : _motor(SPEED_PIN, DIR_PIN, 50, true),
+TableManager::TableManager(uint8_t speedPin, uint8_t dirPin)
+    : _motor(speedPin, dirPin, 50, true),
       _currentAngle(0),
       _lastAngle(0),
       _targetSpeed(0),
