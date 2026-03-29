@@ -167,8 +167,10 @@ DEFINE_CHORD(scale_CHarmonicMajor, "C3", "D3", "E3", "F3", "G3", "G#3", "B3");
 DEFINE_CHORD(scale_EbPentatonicMinorMIDI, "D#3", "F#3", "G#3", "A#3", "C#4");
 DEFINE_CHORD(scale_CLydian, "C3", "D3", "E3", "F#3", "G3", "A3", "B3");
 
-// This header includes other scales you can try out!
-// #include <OtherScales.h>
+// This header includes other scales you can try out! Be sure to choose the ones that don't have the _data tag at the end. e.g.:
+// scale_AMinPentatonic       << USE THIS ONE
+// scale_AMinPentatonic_data  << NOT THIS ONE
+#include <OtherScales.h>
 
 // Put all of your scales into a single container so that we can iterate through them with button B1 on the front panel.
 // IMPORTANT: The number of scales in this container must match NUM_SCALES, defined above.
@@ -263,9 +265,9 @@ void setup()
   }
 
   // set some starting frequencies for the oscillators
-  osc0.setFreq(mtof(noteNameToMIDINote("E2")));
-  osc1.setFreq(mtof(noteNameToMIDINote("A3")));
-  osc2.setFreq(mtof(noteNameToMIDINote("B4")));
+  osc0.setFreq(mtof(scaleContainer.selected().getNote(0)));
+  osc1.setFreq(mtof(scaleContainer.selected().getNote(2)));
+  osc2.setFreq(mtof(scaleContainer.selected().getNote(5)));
 
   // Start the timer that controls how frequently the I2C sensors get polled. The sensors are updated
   // one at a time in updateControl() — arm encoder, table encoder, then color sensor, cycling through
@@ -384,6 +386,7 @@ void updateControl()
       break;
 
     default:
+      currentSensorToUpdate = 0;  // safety mechanism to start over in case we get a weird index
       break;
     }
     k_i2cUpdateDelay.start();
