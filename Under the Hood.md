@@ -338,5 +338,4 @@ to read four analog pins.
 
 # Make Some Noise! (that's no problem with ambienceGenerator())
 
-- note to Raven: I'm going to come back to this to write more notes for you, I just need to pop off to some other tasks
-  for a bit. 
+- In the stock code, ambienceGenerator() does a few things. It mainly just uses
