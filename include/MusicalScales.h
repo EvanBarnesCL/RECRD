@@ -1,6 +1,26 @@
-#ifndef OTHER_SCALES_H
-#define OTHER_SCALES
+#ifndef MUSICAL_SCALES_H
+#define MUSICAL_SCALES
 #include <MusicTools.h>
+
+// This uses a macro that makes it easy to define a new Chord object. Chords in the context of this program are just collections
+// of note data. They can be up to 32 notes, and you can use them as chords, scales, arpeggios, melodies, or however you want.
+// See MusicTools.h to see how this macro is constructed.
+
+// C Pentatonic Major - A five-note scale derived from the major scale by omitting the fourth 
+// and seventh degrees (C, D, E, G, A), widely used in pop, country, and blues.
+DEFINE_CHORD(scale_CPentatonicMajor, "C3", "D3", "E3", "G3", "A3");
+
+// C Harmonic Minor - A seven-note hybrid scale combining the major scale with a lowered sixth 
+// degree (C, D, E, F, G, A♭, B), creating a distinctive sound found in works by Debussy and Takemitsu.
+DEFINE_CHORD(scale_CHarmonicMajor, "C3", "D3", "E3", "F3", "G3", "G#3", "B3");
+
+// Eb Pentatonic Minor - A five-note scale derived from the natural minor scale by omitting the 
+// second and sixth degrees (E♭, G♭, A♭, B♭, D♭), commonly used in blues, rock, and pop.
+DEFINE_CHORD(scale_EbPentatonicMinor, "D#3", "F#3", "G#3", "A#3", "C#4");
+
+// C Lydian - The fourth mode of G major consisting of seven notes (C, D, E, F♯, G, A, B), 
+// characterized by a raised fourth degree compared to the major scale.
+DEFINE_CHORD(scale_CLydian, "C3", "D3", "E3", "F#3", "G3", "A3", "B3");
 
 // C Dorian - Minor mode with a raised 6th, classic jazz and folk sound
 DEFINE_CHORD(scale_CDorian, "C3", "D3", "Eb3", "F3", "G3", "A3", "Bb3");

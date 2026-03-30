@@ -1,5 +1,5 @@
 #include <ColorSensor.h>
-#include <Configuration.h>
+#include <Debug.h>
 
 // ---------------------------------------------------------------------------
 // Constructor

@@ -4,9 +4,6 @@
 #include <PWMFreak.h>
 #include <Mozzi.h>
 #include <Oscil.h>
-#include <tables/saw2048_int8.h>
-#include <tables/triangle_dist_cubed_2048_int8.h>
-#include <tables/triangle_valve_2_2048_int8.h>
 #include <IntMap.h>
 #include <EventDelay.h>
 #include <mozzi_utils.h>
@@ -94,25 +91,11 @@ inline uint8_t getBrightness(uint8_t level = 3)
     );
 }
 #endif
-
 // **********************************************************************************
 // Mozzi Configuration
 // **********************************************************************************
 
-/**
- * @brief Control rate in Hz for updateControl() callback.
- *
- * Must be a power of 2. Higher values improve responsiveness to sensor input
- * but reduce processing time available for audio synthesis. Audio glitching
- * may indicate this value should be reduced.
- */
-#define MOZZI_CONTROL_RATE 128
-
-// These are the wavetables that will be used for each oscillator voice.
-Oscil<TRIANGLE_DIST_CUBED_2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc0(TRIANGLE_DIST_CUBED_2048_DATA);
-Oscil<SAW2048_NUM_CELLS,                  MOZZI_AUDIO_RATE> osc1(SAW2048_DATA);
-Oscil<TRIANGLE_VALVE_2_2048_NUM_CELLS,    MOZZI_AUDIO_RATE> osc2(TRIANGLE_VALVE_2_2048_DATA);
-
+// Important configuration values are in Configuration.h
 
 // **********************************************************************************
 // Music Generation Control
@@ -147,42 +130,13 @@ const IntMap colorToScaleNote5(0, 256, 0, 5);
 bool enableButton2Mode = false, previousEnableButton2Mode = false;
 uint8_t buttonPressed = 255;    // 255 means no button is pressed. A value of 0, 1, or 2 corresponds to B0, B1, or B2 pressed.
 
-
 // **********************************************************************************
-// Musical Scales
+// Music Things
 // **********************************************************************************
 
-// First, define the number of scales we're going to use. This value is referenced in the header that gets included next,
-// so it has to be included before that.
-constexpr uint8_t NUM_SCALES = 3;
-
-// Then include the MusicTools header, which includes functions that are musically useful for composition and things.
-#include <MusicTools.h>
-
-// This is a macro that makes it easy to define a new Chord object. Chords in the context of this program are just collections
-// of note data. They can be up to 32 notes, and you can use them as chords, scales, arpeggios, melodies, or however you want.
-// See MusicTools.h to see how this macro is constructed. The macro is absolutely wild looking.
-DEFINE_CHORD(scale_CPentatonicMajor, "C3", "D3", "E3", "G3", "A3");
-DEFINE_CHORD(scale_CHarmonicMajor, "C3", "D3", "E3", "F3", "G3", "G#3", "B3");
-DEFINE_CHORD(scale_EbPentatonicMinorMIDI, "D#3", "F#3", "G#3", "A#3", "C#4");
-DEFINE_CHORD(scale_CLydian, "C3", "D3", "E3", "F#3", "G3", "A3", "B3");
-
-// This header includes other scales you can try out! Be sure to choose the ones that don't have the _data tag at the end. e.g.:
-// scale_AMinPentatonic       << USE THIS ONE
-// scale_AMinPentatonic_data  << NOT THIS ONE
-#include <OtherScales.h>
-
-// Put all of your scales into a single container so that we can iterate through them with button B1 on the front panel.
-// IMPORTANT: The number of scales in this container must match NUM_SCALES, defined above.
-ScaleStorage scaleContainer = 
-{
-  {
-    &scale_EbPentatonicMinorMIDI, 
-    &scale_CLydian, 
-    &scale_CPentatonicMajor
-  }, 
-  0 // index of currently selected scale.
-};
+/**
+ * Note: most of the musical choices for this program are in Configuration.h. That's where you can choose which scales get used. 
+ */
 
 // set up a Chord object with the data for the first selected chord from the container.
 Chord currentScale = scaleContainer.selected();
@@ -261,7 +215,7 @@ void setup()
   }
   else
   {
-    digitalWrite(LED_PIN, HIGH);
+    digitalWrite(LED_PIN, HIGH); 
   }
 
   // set some starting frequencies for the oscillators
@@ -486,7 +440,7 @@ void ambienceGenerator()
   // takes a single clock cycle. Division is incredibly slow on this microcontroller, and might need
   // something like 40 clock cycles.
   // mappedWhite is 8 bit, this cuts it down to 2 (range 0-3).
-  int8_t octaveShifter = (int8_t)(mappedWhite >> 6);
+  int8_t octaveShifter = (int8_t)(OCTAVE_SHIFTER_CHANNEL >> 6);
   static bool arpeggiate = false, arpStarted = false, arpOnTimeOut = true;
 
   // button2mode is basically arpeggiating each oscillator, instead of holding sustained notes.
@@ -530,16 +484,16 @@ void ambienceGenerator()
       // by 0, which means constantly retriggering the note (which would result in a silent note because
       // the ADSR would constantly restart). So we multiply the base interval by a number between 1 and 15,
       // so the base interval ranges from 64ms to 15*64ms = 960ms.
-      osc0ButtonMode2NoteTimer.set(max(1, mappedGreen >> 4) * baseNoteInterval);
+      osc0ButtonMode2NoteTimer.set(max(1, OSC_0_BUTTON_2_MODE_TIMER >> 4) * baseNoteInterval);
       osc0ButtonMode2NoteTimer.start();
-      osc1ButtonMode2NoteTimer.set(max(1, mappedGreen >> 4) * baseNoteInterval * 2);
+      osc1ButtonMode2NoteTimer.set(max(1, OSC_1_BUTTON_2_MODE_TIMER >> 4) * baseNoteInterval * 2);
       osc1ButtonMode2NoteTimer.start();
-      osc2ButtonMode2NoteTimer.set(max(1, mappedGreen >> 4) * baseNoteInterval);
+      osc2ButtonMode2NoteTimer.set(max(1, OSC_2_BUTTON_2_MODE_TIMER >> 4) * baseNoteInterval);
       osc2ButtonMode2NoteTimer.start();
     }
 
     // the base note interval starts at 64, but now it gets modified by the value of the white color channel
-    baseNoteInterval = max(1, (mappedWhite >> 5)) * 16; // evaluates to a range between 16 and 7*16 = 112
+    baseNoteInterval = max(1, (BASE_INTERVAL_CHANNEL >> 5)) * 16; // evaluates to a range between 16 and 7*16 = 112
 
     // check to see if we're ready to trigger a note for osc0
     if (osc0ButtonMode2NoteTimer.ready())
@@ -552,15 +506,15 @@ void ambienceGenerator()
       // of this, change the constraints on the random number. For example, you could change to rand(128), which should
       // make notes trigger a lot more often. Or move the range up so that only extremely bright red light values trigger
       // a note by using something like rand(192, 256).
-      if (rand(256) < mappedRed)
+      if (rand(RANDOMNESS_THRESHOLD + 1) < OSC_0_NOTE_SELECTOR_CHANNEL)
       {
         switch (scaleContainer.selected().numNotes)
         {
           case 7:
-            osc0Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote7(mappedGreen)) + ((int8_t)rand(-1, 2) * 12);
+            osc0Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote7(OSC_0_NOTE_SELECTOR_CHANNEL)) + ((int8_t)rand(-1, 2) * 12);
             break;
           case 5:
-            osc0Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote5(mappedGreen)) + ((int8_t)rand(-1, 2) * 12);
+            osc0Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote5(OSC_0_NOTE_SELECTOR_CHANNEL)) + ((int8_t)rand(-1, 2) * 12);
             break;
           default:
             break;
@@ -571,22 +525,22 @@ void ambienceGenerator()
       osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
       osc0.setFreq(osc0Params.frequency);
       // reset the timer
-      osc0ButtonMode2NoteTimer.set(max(1, mappedGreen >> 4) * baseNoteInterval);
+      osc0ButtonMode2NoteTimer.set(max(1, OSC_0_BUTTON_2_MODE_TIMER >> 4) * baseNoteInterval);
       osc0ButtonMode2NoteTimer.start();
     }
 
     // now do the same thing for osc1
     if (osc1ButtonMode2NoteTimer.ready())
     {
-      if (rand(256) < mappedGreen)
+      if (rand(RANDOMNESS_THRESHOLD + 1) < OSC_1_ARP_TRIGGER_CHANNEL)
       {
         switch (scaleContainer.selected().numNotes)
         {
           case 7:
-            osc1Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote7(mappedBlue)) + ((int8_t)rand(-1, 2) * 12);
+            osc1Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote7(OSC_1_NOTE_SELECTOR_CHANNEL)) + ((int8_t)rand(-1, 2) * 12);
             break;
           case 5:
-            osc1Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote5(mappedBlue)) + ((int8_t)rand(-1, 2) * 12);
+            osc1Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote5(OSC_1_NOTE_SELECTOR_CHANNEL)) + ((int8_t)rand(-1, 2) * 12);
             break;
           default:
             break;
@@ -595,22 +549,22 @@ void ambienceGenerator()
       osc1AmpEnv.noteOn();
       osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
       osc1.setFreq(osc1Params.frequency);
-      osc1ButtonMode2NoteTimer.set(max(1, mappedBlue >> 4) * baseNoteInterval * 2);
+      osc1ButtonMode2NoteTimer.set(max(1, OSC_1_BUTTON_2_MODE_TIMER >> 4) * baseNoteInterval * 2);
       osc1ButtonMode2NoteTimer.start();
     }
 
     // and do the same for osc2
     if (osc2ButtonMode2NoteTimer.ready())
     {
-      if (rand(256) < mappedBlue)
+      if (rand(RANDOMNESS_THRESHOLD + 1) < OSC_2_ARP_TRIGGER_CHANNEL)
       {
         switch (scaleContainer.selected().numNotes)
         {
           case 7:
-            osc2Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote7(mappedRed)) + ((int8_t)rand(-1, 2) * 12);
+            osc2Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote7(OSC_2_NOTE_SELECTOR_CHANNEL)) + ((int8_t)rand(-1, 2) * 12);
             break;
           case 5:
-            osc2Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote5(mappedRed)) + ((int8_t)rand(-1, 2) * 12);
+            osc2Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote5(OSC_2_NOTE_SELECTOR_CHANNEL)) + ((int8_t)rand(-1, 2) * 12);
             break;
           default:
             break;
@@ -619,7 +573,7 @@ void ambienceGenerator()
       osc2AmpEnv.noteOn();
       osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
       osc2.setFreq(osc2Params.frequency);
-      osc2ButtonMode2NoteTimer.set(max(1, mappedRed >> 4) * baseNoteInterval);
+      osc2ButtonMode2NoteTimer.set(max(1, OSC_2_BUTTON_2_MODE_TIMER >> 4) * baseNoteInterval);
       osc2ButtonMode2NoteTimer.start();
     }
 
@@ -654,7 +608,7 @@ void ambienceGenerator()
     // the more white light there is, the more likely the arpeggio is.
     if (octaveShifter > 0 && !arpOnTimeOut && !arpStarted)
     {
-      arpeggiate = (rand(256) <= mappedWhite) ? true : false; // add some randomness so that we don't always trigger an arp
+      arpeggiate = (rand(RANDOMNESS_THRESHOLD + 1) <= GLOBAL_ARP_TRIGGER) ? true : false; // add some randomness so that we don't always trigger an arp
                                                               // could use something like rand(128) to force more arpeggios
     }
 
@@ -663,11 +617,11 @@ void ambienceGenerator()
     uint8_t i = 0;
     if (scaleContainer.selected().numNotes == 7)
     {
-      i = colorToScaleNote7(mappedGreen);   // this is an IntMap
+      i = colorToScaleNote7(OSC_0_NOTE_SELECTOR_CHANNEL);   // this is an IntMap
     }
     else
     {
-      i = colorToScaleNote5(mappedGreen);   // IntMap
+      i = colorToScaleNote5(OSC_0_NOTE_SELECTOR_CHANNEL);   // IntMap
     }
 
     // get the actual note from the scale
@@ -690,11 +644,11 @@ void ambienceGenerator()
     uint8_t j = 0;
     if (scaleContainer.selected().numNotes == 7)
     {
-      j = colorToScaleNote7(mappedBlue);
+      j = colorToScaleNote7(OSC_1_NOTE_SELECTOR_CHANNEL);
     }
     else
     {
-      j = colorToScaleNote5(mappedBlue);
+      j = colorToScaleNote5(OSC_1_NOTE_SELECTOR_CHANNEL);
     }
 
     switch (scaleContainer.scaleSelector)
@@ -741,7 +695,7 @@ void ambienceGenerator()
       {
         numNotesLeftInArp = rand(4, 17);
         arpStarted = true;
-        arpNoteTimer.set(min(mappedBlue, 192));
+        arpNoteTimer.set(min(OSC_2_ARP_TRIGGER_CHANNEL, 192));
         arpNoteTimer.start();
         arpIndex = rand(scaleContainer.selected().numNotes);
         osc2AmpEnv.setTimes(5, 5, 100, 100);
