@@ -36,10 +36,17 @@ constexpr uint8_t I2C_UPDATE_INTERVAL = 15; // time in milliseconds
 #include <tables/saw2048_int8.h>                    // Saw wave. 2048 samples represent 1 complete cycle of the wave. Each sample is 8 bit int.
 #include <tables/triangle_dist_cubed_2048_int8.h>
 #include <tables/triangle_valve_2_2048_int8.h>
+#include <tables/saw_analogue512_int8.h>
+
+// Oscil<SAW_ANALOGUE512_NUM_CELLS,          MOZZI_AUDIO_RATE> osc0(SAW_ANALOGUE512_DATA);
+
 
 Oscil<TRIANGLE_DIST_CUBED_2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc0(TRIANGLE_DIST_CUBED_2048_DATA);  // oscillator 0
-Oscil<SAW2048_NUM_CELLS,                  MOZZI_AUDIO_RATE> osc1(SAW2048_DATA);                   // oscillator 1
+// Oscil<SAW2048_NUM_CELLS,                  MOZZI_AUDIO_RATE> osc1(SAW2048_DATA);                   // oscillator 1
 Oscil<TRIANGLE_VALVE_2_2048_NUM_CELLS,    MOZZI_AUDIO_RATE> osc2(TRIANGLE_VALVE_2_2048_DATA);     // oscillator 2
+
+Oscil<TRIANGLE_DIST_CUBED_2048_NUM_CELLS, MOZZI_AUDIO_RATE> osc1(TRIANGLE_DIST_CUBED_2048_DATA);
+
 
 /**
  * General example of how to use a new wavetable:
@@ -74,8 +81,8 @@ ScaleStorage scaleContainer =
 {
   {
     &scale_EbPentatonicMinor,   
-    &scale_CLydian,             
-    &scale_CPentatonicMajor     
+    &scale_FMajPentatonic,             
+    &scale_BbMajPentatonic     
   }, 
   0 // index of currently selected scale.
 };

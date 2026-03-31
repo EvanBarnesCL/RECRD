@@ -110,6 +110,8 @@ inline uint8_t getBrightness(uint8_t level = 3)
 oscillatorParams osc0Params, osc1Params, osc2Params;
 
 // create portamento object so we can glide from one note to another
+Portamento<MOZZI_CONTROL_RATE> osc0Portamento;
+Portamento<MOZZI_CONTROL_RATE> osc1Portamento;
 Portamento<MOZZI_CONTROL_RATE> osc2Portamento;
 
 // create ADSR envelopes to make each note fade in and out.
@@ -143,7 +145,7 @@ Chord currentScale = scaleContainer.selected();
 
 // function prototype for the function that will actually generate sounds from color data
 void ambienceGenerator();
-
+void callMeDronathan();
 
 // **********************************************************************************
 // Setup
@@ -360,7 +362,8 @@ void updateControl()
   mappedWhite = autoWhiteToUINT8_T(colorSensor.getClearFixed().asInt());
 
   // call the function that determines how sound is generated
-  ambienceGenerator();
+  // ambienceGenerator();
+  callMeDronathan();
 
   previousEnableButton2Mode = enableButton2Mode;
 }
@@ -402,6 +405,59 @@ void loop()
 {
   audioHook();
 }
+
+
+
+
+
+
+
+
+
+
+void callMeDronathan()
+{
+  
+  uint8_t noteIndex = colorToScaleNote5(mappedBlue);
+
+  osc0Params.noteMIDINumber = scaleContainer.selected().getNote(noteIndex) - 12;
+  osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
+  osc0.setFreq(osc0Params.frequency);
+  // osc0Params.volume = 200;
+  
+  if (osc0Params.lastNoteMIDINumber != osc0Params.noteMIDINumber)
+  {
+    osc0AmpEnv.setADLevels(200, 200);
+    osc0AmpEnv.noteOn();
+    osc0AmpEnv.update();
+    osc0Params.volume = osc0AmpEnv.next();
+    osc0Params.lastNoteMIDINumber = osc0Params.noteMIDINumber;
+  }
+  
+  osc1Params.noteMIDINumber = -12 + scaleContainer.selected().getNote((noteIndex + 2) % scaleContainer.selected().numNotes);
+  osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
+  osc1.setFreq(osc1Params.frequency);
+  osc1Params.volume = 180;
+
+  osc2Params.noteMIDINumber = scaleContainer.selected().getNote((noteIndex + 3) % scaleContainer.selected().numNotes);
+  osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
+  osc2.setFreq(osc2Params.frequency);
+  osc2Params.volume = 180;
+  
+}
+
+
+// osc1Params.frequency = osc1Params.frequency + ((mappedGreen >> 6) - 2);
+
+
+
+
+
+
+
+
+
+
 
 
 // **********************************************************************************
