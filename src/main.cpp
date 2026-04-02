@@ -7,12 +7,9 @@
 #include <IntMap.h>
 #include <EventDelay.h>
 #include <mozzi_utils.h>
-#include <mozzi_rand.h>
 #include <mozzi_midi.h>
 #include <AS5600.h>
 #include <AutoMap.h>
-#include <Portamento.h>
-#include <ADSR.h>
 
 // Look in these files to change software and hardware configurations
 #include <Configuration.h>
@@ -41,6 +38,7 @@ EventDelay k_i2cUpdateDelay;
 ArmManager arm(ARM_MOTOR_SPEED_PIN, ARM_MOTOR_DIR_PIN);
 TableManager table(TABLE_MOTOR_SPEED_PIN, TABLE_MOTOR_DIR_PIN);
 
+
 // **********************************************************************************
 // Color Sensor
 // **********************************************************************************
@@ -48,10 +46,10 @@ TableManager table(TABLE_MOTOR_SPEED_PIN, TABLE_MOTOR_DIR_PIN);
 #include <ColorSensor.h>
 ColorSensor colorSensor;
 
-// where color data that has been mapped into control signals will be stored
+// Color channel data mapped into 0-255 uint8_t control values via AutoMap.
 uint8_t mappedGreen = 0, mappedBlue = 0, mappedRed = 0, mappedWhite = 0;
 
-// Two LEDs on the color sensor PCB can illuminate the viewing area, so set those up.
+// Two LEDs on the color sensor PCB can illuminate the viewing area.
 constexpr uint8_t NUM_BRIGHTNESS_LEVELS = 5;
 uint8_t brightnessIterator = 3;
 
@@ -91,58 +89,49 @@ inline uint8_t getBrightness(uint8_t level = 3)
     );
 }
 #endif
-// **********************************************************************************
-// Mozzi Configuration
-// **********************************************************************************
 
-// Important configuration values are in Configuration.h
 
 // **********************************************************************************
 // Music Generation Control
 // **********************************************************************************
 
-// Include the MusicTypes header, which defines MIDI_NOTE and Chord.
 #include <MusicTypes.h>
-// Contains tools useful for converting music information into oscillator parameters and things
-#include <OscillatorTools.h>
 
-// create structs for storing parameters for each oscillator
-oscillatorParams osc0Params, osc1Params, osc2Params;
-
-// create portamento object so we can glide from one note to another
-Portamento<MOZZI_CONTROL_RATE> osc2Portamento;
-
-// create ADSR envelopes to make each note fade in and out.
-ADSR<MOZZI_CONTROL_RATE, MOZZI_CONTROL_RATE> osc0AmpEnv, osc1AmpEnv, osc2AmpEnv;
-
-// Mozzi EventDelay timers, used instead of millis() for timing
-EventDelay arpNoteTimer, arpTimeout;
-EventDelay osc0ButtonMode2NoteTimer, osc1ButtonMode2NoteTimer, osc2ButtonMode2NoteTimer;
-
-// IntMaps for squashing scaled color data down to fit a musical scale.
+// IntMaps for quantizing a color channel value (0-255) to a scale degree index.
 const IntMap colorToScaleNote7(0, 256, 0, 7);
 const IntMap colorToScaleNote5(0, 256, 0, 5);
 
-// Manages the three buttons below the potentiometers. The buttons are all connected to
-// a single analog input pin, so they need some special sauce to work.
+// Manages the three buttons below the potentiometers. The buttons are all connected
+// to a single analog input pin, so they need some special sauce to work.
 #include <AnalogButtons.h>
-// Variables related to the buttons
-bool enableButton2Mode = false, previousEnableButton2Mode = false;
-uint8_t buttonPressed = 255;    // 255 means no button is pressed. A value of 0, 1, or 2 corresponds to B0, B1, or B2 pressed.
+
+// 255 means no button is pressed. 0, 1, or 2 corresponds to B0, B1, B2 pressed.
+uint8_t buttonPressed = 255;
+
 
 // **********************************************************************************
-// Music Things
+// FM Synthesis State
 // **********************************************************************************
 
 /**
- * Note: most of the musical choices for this program are in Configuration.h. That's where you can choose which scales get used. 
+ * Peak phase deviation written by updateFM() at control rate, read by
+ * updateAudio() at audio rate. On AVR, int32_t writes are not atomic, so
+ * there is a theoretical race condition between the two; in practice a single
+ * sample of corruption is inaudible at audio rate and the risk is accepted here
+ * as it is throughout the rest of the Mozzi architecture.
  */
+int32_t gDeviation = 0;
 
-// set up a Chord object with the data for the first selected chord from the container.
-Chord currentScale = scaleContainer.selected();
+/**
+ * When false (default), the C:M ratio is constrained to integers 1-8,
+ * producing tonal, harmonically rich spectra. When true, fractional ratios
+ * in the range 1.0-4.0 are used, placing FM sidebands at inharmonic
+ * frequencies — bell-like and metallic. Toggled by button B2.
+ */
+bool inharmonicMode = false;
 
-// function prototype for the function that will actually generate sounds from color data
-void ambienceGenerator();
+// Function prototype — definition follows loop().
+void updateFM();
 
 
 // **********************************************************************************
@@ -157,12 +146,9 @@ void ambienceGenerator();
  */
 void setup()
 {
-  randSeed(analogRead(A7));
-
   SERIAL_BEGIN(115200);
   SERIAL_PRINTLN("starting");
 
-  // start I2C
   Wire.begin();
 
   // Initialize the table encoder and arm encoder, then home the arm.
@@ -173,20 +159,19 @@ void setup()
   arm.begin();
   arm.home();
 
-  // start the color sensor I2C connection
   colorSensor.begin(false);
 
-  // IMPORTANT: Set the I2C clock to 400kHz fast mode AFTER initializing the connection to the sensors.
-  // Need to use fastest I2C possible to minimize latency for Mozzi.
+  // IMPORTANT: Set the I2C clock to 400kHz fast mode AFTER initializing the
+  // connection to the sensors.
   Wire.setClock(400000);
 
   colorSensor.reset();
   colorSensor.enable();
-  // Possible gain settings are 1, 4, 8, 32, 96. setting the second parameter to true doubles the diode sensing area.
-  // That means that it's possible to get effective gains of 1, 2, 4, 8, 16, 32, 64, 96, and 192.
+  // Possible gain settings are 1, 4, 8, 32, 96. Setting the second parameter
+  // to true doubles the diode sensing area.
   colorSensor.setGain(32, false);
 
-  // See the end of CLS16D24.h for a complete table of possible values here:
+  // See the end of CLS16D24.h for a complete table of possible values.
   colorSensor.setResolutionAndConversionTime(0x02);
   SERIAL_PRINT("Conversion time: ");
   SERIAL_PRINTLN(colorSensor.getConversionTimeMillis());
@@ -199,15 +184,13 @@ void setup()
   colorSensor.setChannelEnabled(ColorChannels::CLEAR, true);
   colorSensor.setChannelEnabled(ColorChannels::IR,    false);
 
-  // Change the PWM frequency on the motor control pins to push it above audible range.
-  // After this line, millis() and delay() are unreliable. Use Mozzi EventDelay instead.
+  // Change the PWM frequency on the motor control pins to push it above audible
+  // range. After this line, millis() and delay() are unreliable.
   if (USE_FAST_PWM)
   {
     setPwmFrequency(5, 1);
   }
 
-  // Use PWM dimming for the LEDs on the color sensor. This PWM can also cause audible noise, so if
-  // you want to use it, it needs to be set at a frequency that pushes the noise outside the audible range.
   if (USE_LED_PWM)
   {
     setPwmFrequency(LED_PIN, 1);
@@ -215,31 +198,19 @@ void setup()
   }
   else
   {
-    digitalWrite(LED_PIN, HIGH); 
+    digitalWrite(LED_PIN, HIGH);
   }
 
-  // set some starting frequencies for the oscillators
-  osc0.setFreq(mtof(scaleContainer.selected().getNote(0)));
-  osc1.setFreq(mtof(scaleContainer.selected().getNote(2)));
-  osc2.setFreq(mtof(scaleContainer.selected().getNote(5)));
+  // Prime the FM oscillators. The carrier starts on the root note of the first
+  // scale; the modulator starts at a 1:2 ratio (one octave up), which gives a
+  // clean, recognizable starting timbre. The mod-index LFO starts slow.
+  float baseHz = mtof(scaleContainer.selected().getNote(0));
+  aCarrier.setFreq(baseHz);
+  aModulator.setFreq(baseHz * 2.0f);
+  kModIndex.setFreq(0.5f);  // 0.5 Hz; updateFM() will take over from the first cycle
 
-  // Start the timer that controls how frequently the I2C sensors get polled. The sensors are updated
-  // one at a time in updateControl() — arm encoder, table encoder, then color sensor, cycling through
-  // in sequence. I2C_UPDATE_INTERVAL is defined in Configuration.h, and is currently set to 15ms.
-  // That means each individual sensor gets a fresh reading every 45ms (3 sensors * 15ms). Updating
-  // more frequently gives you more responsive control, but I2C reads block the processor, so polling
-  // too aggressively will steal time from Mozzi's audio generation and cause audible glitching.
-  // After this call, the timer is restarted at the end of each sensor read in updateControl() rather
-  // than running on a fixed schedule, so the interval represents minimum time between reads, not a
-  // strict period.
   k_i2cUpdateDelay.set(I2C_UPDATE_INTERVAL);
-  
-  // set the initial attack and decay levels for the oscillators (basically fade in and fade out)
-  osc0AmpEnv.setADLevels(160, 140);
-  osc1AmpEnv.setADLevels(80, 60);
-  osc2AmpEnv.setADLevels(160, 140);
-  
-  // finally, start Mozzi!
+
   startMozzi(MOZZI_CONTROL_RATE);
 }
 
@@ -252,7 +223,7 @@ void setup()
  * @brief Mozzi control-rate callback for sensor polling and state updates.
  *
  * Called at MOZZI_CONTROL_RATE Hz. Handles button debouncing, sensor updates,
- * arm/table positioning, and invokes the ambience generator. I2C reads are
+ * arm/table positioning, and invokes the FM parameter update. I2C reads are
  * staggered to minimize interference with audio synthesis.
  */
 void updateControl()
@@ -263,21 +234,17 @@ void updateControl()
   if (initialize)
   {
     buttonTimer.set(250);
-    arpTimeout.set(4000);
-    arpTimeout.start();
     initialize = false;
   }
 
-  // These are auto-ranging mappings for the color channels. They work like map() but track the
-  // min/max values seen so far and update the mapping range dynamically.
-  // They are static variables here (not globals) so we can use colorSensor.getResolution() to set
-  // the upper input bound rather than hardcoding it.
+  // Auto-ranging maps for the color channels. Static so they persist across
+  // calls and keep tracking the observed min/max.
   static AutoMap autoGreenToUINT8_T(0, colorSensor.getResolution(), 0, 255);
   static AutoMap autoBlueToUINT8_T(0,  colorSensor.getResolution(), 0, 255);
   static AutoMap autoRedToUINT8_T(0,   colorSensor.getResolution(), 0, 255);
   static AutoMap autoWhiteToUINT8_T(0, colorSensor.getResolution(), 0, 255);
 
-  // check to see if buttons are pressed. returns 0, 1, 2, or 255 (no press)
+  // Check for button presses. Returns 0, 1, 2, or 255 (no press).
   buttonPressed = getButtonPressed(mozziAnalogRead<10>(BUTTONS_PIN));
   if (nextButtonPressAllowed && buttonPressed < 255)
   {
@@ -292,14 +259,13 @@ void updateControl()
 
     case 1: // middle button — scale selector
       scaleContainer.nextScale();
-      currentScale = scaleContainer.selected();
       SERIAL_TABS(2);
       SERIAL_PRINT("scale: ");
       SERIAL_PRINTLN(scaleContainer.scaleSelector);
       break;
 
-    case 2: // right button — toggle button mode 2
-      enableButton2Mode = !enableButton2Mode;
+    case 2: // right button — toggle harmonic / inharmonic C:M ratio mode
+      inharmonicMode = !inharmonicMode;
       break;
 
     default:
@@ -312,9 +278,7 @@ void updateControl()
     nextButtonPressAllowed = true;
   }
 
-  // Update the table's target speed from the pot. TableManager ignores this if
-  // stop-detection has kicked in and resumes tracking the pot once the table
-  // starts moving again.
+  // Update the table's target speed from the pot.
   table.updateTargetSpeed(mozziAnalogRead<10>(POT_B_PIN));
 
   static uint8_t currentSensorToUpdate = 0;
@@ -328,7 +292,7 @@ void updateControl()
       currentSensorToUpdate++;
       break;
 
-    case 1: // update the table encoder. stop-detection runs inside updateAngle()
+    case 1: // update the table encoder; stop-detection runs inside updateAngle()
       table.updateAngle();
       currentSensorToUpdate++;
       break;
@@ -340,7 +304,7 @@ void updateControl()
       break;
 
     default:
-      currentSensorToUpdate = 0;  // safety mechanism to start over in case we get a weird index
+      currentSensorToUpdate = 0;
       break;
     }
     k_i2cUpdateDelay.start();
@@ -353,16 +317,14 @@ void updateControl()
   // Commit the table motor speed.
   table.applySpeed();
 
-  // Turn the different color sensor channels into uint8_t numbers using the AutoMaps
+  // Map raw color sensor counts into 0-255 control values.
   mappedGreen = autoGreenToUINT8_T(colorSensor.getGreenFixed().asInt());
   mappedBlue  = autoBlueToUINT8_T(colorSensor.getBlueFixed().asInt());
   mappedRed   = autoRedToUINT8_T(colorSensor.getRedFixed().asInt());
   mappedWhite = autoWhiteToUINT8_T(colorSensor.getClearFixed().asInt());
 
-  // call the function that determines how sound is generated
-  ambienceGenerator();
-
-  previousEnableButton2Mode = enableButton2Mode;
+  // Derive FM synthesis parameters from the current color readings.
+  updateFM();
 }
 
 
@@ -371,20 +333,22 @@ void updateControl()
 // **********************************************************************************
 
 /**
- * @brief Mozzi audio-rate callback for sample generation.
+ * @brief Mozzi audio-rate callback — the hot path.
  *
- * Called at audio rate (typically 16384 or 32768 Hz). Mixes the three oscillators
- * with their respective volume envelopes and returns a 17-bit scaled output.
- * @return MonoOutput containing the mixed audio sample.
+ * Called at audio rate (~16384 Hz on the ATmega328P). Advances the modulator
+ * oscillator, scales its output by the deviation computed in updateFM(), and
+ * uses the result as a phase offset for the carrier via Mozzi's phMod().
+ * Everything here must be integer arithmetic; no function calls with unknown cost.
+ *
+ * The modulation calculation mirrors the classic FM/PM synthesis formula:
+ *   output = carrier( θ + β * sin(ωm * t) )
+ * where β (modulation index) is encoded in gDeviation and the modulator
+ * provides the sin(ωm * t) term.
  */
 AudioOutput updateAudio()
 {
-  int32_t asig = (int32_t)
-    osc0.next() * osc0Params.volume +
-    osc1.next() * osc1Params.volume +
-    osc2.next() * osc2Params.volume;
-
-  return MonoOutput::fromAlmostNBit(17, asig);
+  int32_t modulation = (gDeviation * aModulator.next()) >> 8;
+  return MonoOutput::from8Bit(aCarrier.phMod(modulation));
 }
 
 
@@ -393,10 +357,7 @@ AudioOutput updateAudio()
 // **********************************************************************************
 
 /**
- * @brief Main Arduino loop—delegates to Mozzi's audio hook.
- *
- * All control logic resides in updateControl(); audio synthesis occurs in
- * updateAudio(). This function merely services the Mozzi framework.
+ * @brief Main Arduino loop — delegates entirely to Mozzi's audio hook.
  */
 void loop()
 {
@@ -405,339 +366,101 @@ void loop()
 
 
 // **********************************************************************************
-// ambienceGenerator
+// updateFM
 // **********************************************************************************
 
 /**
- * @brief Generates musical output from color sensor data and mode state.
+ * @brief Derives FM synthesis parameters from the current color sensor readings.
  *
- * Two primary modes of operation:
- * - Normal mode: Sustained drones with notes selected from scales based on
- *   color channel values. Occasional arpeggios triggered by white channel intensity.
- * - Button mode 2: Stochastic arpeggiation with probability of note triggers
- *   modulated by color channel values.
+ * Called once per updateControl() cycle (MOZZI_CONTROL_RATE Hz). Writes to
+ * gDeviation, aCarrier, aModulator, and kModIndex. The channel-to-parameter
+ * assignments are defined in Configuration.h; see the comments there for rationale.
  *
- * ADSR envelopes are reconfigured when transitioning between modes.
+ *   Green  → carrier pitch (scale-quantized note selection)
+ *   Blue   → C:M ratio (harmonic content / timbre class)
+ *   Red    → modulation index (timbral brightness and complexity)
+ *   White  → mod-index LFO rate (speed of timbral animation)
+ *
+ * Button B1 cycles the active scale; pitch stays in-key regardless of which
+ * green value is incoming. Button B2 toggles harmonic vs. inharmonic C:M ratios.
  */
-void ambienceGenerator()
+void updateFM()
 {
-  static int8_t arpIndex = 0;                   // used to select notes in a scale to play as an arpeggio
-  static uint8_t numNotesLeftInArp = 0;         // arpeggios only play for a limited number of notes
-  static bool initialize = true;                // used to initialize some things the first time this function is called
+  // -----------------------------------------------------------------------
+  // Carrier frequency — green channel selects a scale degree.
+  // -----------------------------------------------------------------------
+  // The same note-selection logic used by the original ambience generator:
+  // map the 0-255 channel value to an index into the current scale, then
+  // convert the MIDI note number to Hz with mtof().
+  uint8_t noteIndex = (scaleContainer.selected().numNotes == 7)
+      ? colorToScaleNote7(FM_CARRIER_CHANNEL)
+      : colorToScaleNote5(FM_CARRIER_CHANNEL);
 
-  static uint16_t osc2PortTime = 20;            // portamento value
+  float carrier_hz = mtof(scaleContainer.selected().getNote(noteIndex));
 
-  const bool USE_PORTAMENTO = true;
-
-  static uint16_t attack = 100, decay = 500, sustain = 8000, release = 3000;
-
-  // used to move a musical note up or down by an octave. mappedWhite is the 8 bit autoMapped value
-  // of the white light color channel, and the >> 6 operator performs a right shift, where it takes
-  // all 8 bits in a number and literally moves them right, filling in with 0s on the left. This moves
-  // 6 places to the right, so it reduces an 8 bit number to a 2 bit number, which can represent the
-  // numbers 0 through 3. It's basically a way of dividing 256 by 64, but it's a much faster operation.
-  // the microcontroller has hardware purpose-built for performing bit shift operations, and it only
-  // takes a single clock cycle. Division is incredibly slow on this microcontroller, and might need
-  // something like 40 clock cycles.
-  // mappedWhite is 8 bit, this cuts it down to 2 (range 0-3).
-  int8_t octaveShifter = (int8_t)(OCTAVE_SHIFTER_CHANNEL >> 6);
-  static bool arpeggiate = false, arpStarted = false, arpOnTimeOut = true;
-
-  // button2mode is basically arpeggiating each oscillator, instead of holding sustained notes.
-  // baseNoteInterval is the starting point for how much time should elapse between triggering notes
-  // in this mode. This gets modified by the value of the green color channel in button2mode.
-  static uint8_t baseNoteInterval = 64; // baseline amount of time that an arp note will be turned on for, gets modified by sensor readings
-
-  if (!enableButton2Mode && previousEnableButton2Mode)
-    initialize = true; // transition out of button mode 2 requires resetting ADSRs
-
-  // on first call, we need to set some things up
-  if (initialize)
+  // -----------------------------------------------------------------------
+  // C:M ratio — blue channel.
+  // -----------------------------------------------------------------------
+  // In FM synthesis, the ratio between the carrier and modulator frequencies
+  // determines which partials appear in the output spectrum. Integer ratios
+  // produce harmonic spectra (all partials are integer multiples of the
+  // fundamental), while fractional ratios produce inharmonic spectra whose
+  // partials don't align with the harmonic series — the hallmark of bell,
+  // gong, and metallic timbres.
+  //
+  // Harmonic mode: FM_RATIO_CHANNEL >> 5 maps 0-255 to 0-7, indexing into
+  // the table of integer ratios {1,2,3,4,5,6,7,8}.
+  //
+  // Inharmonic mode: FM_RATIO_CHANNEL / 85.0 adds 0.0-3.0 to a base ratio
+  // of 1.0, giving a continuous sweep from 1.0 to ~4.0 with fine resolution.
+  float cm_ratio;
+  if (!inharmonicMode)
   {
-    osc0AmpEnv.setADLevels(160, 140);
-    osc1AmpEnv.setADLevels(60, 50);
-    osc2AmpEnv.setADLevels(120, 110);
-    osc0AmpEnv.setTimes(attack, decay, sustain, release);
-    osc1AmpEnv.setTimes(attack, decay, sustain, release);
-    osc2AmpEnv.setTimes(attack, decay, sustain, release);
-    initialize = false;
+    static const uint8_t harmonicRatios[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    cm_ratio = (float)harmonicRatios[FM_RATIO_CHANNEL >> 5];
+  }
+  else
+  {
+    cm_ratio = 1.0f + (FM_RATIO_CHANNEL / 85.0f);  // ~1.0 to ~4.0
   }
 
-  // button2mode is basically arpeggiating each oscillator, instead of holding sustained notes
-  if (enableButton2Mode)
-  {
-    // if we weren't already in button2Mode, we need to set some things up first
-    if (!previousEnableButton2Mode)
-    {
-      // change the ADSR to make the notes sound plucky
-      osc0AmpEnv.setTimes(5, 50, 100, 200);
-      osc1AmpEnv.setTimes(5, 50, 100, 200);
-      osc1AmpEnv.setADLevels(60, 40);
-      osc2AmpEnv.setTimes(5, 50, 100, 200);
+  float mod_hz = carrier_hz * cm_ratio;
+  aCarrier.setFreq(carrier_hz);
+  aModulator.setFreq(mod_hz);
 
-      // start the timer objects that will determine how often we should play a note
-      // notes are triggered more or less frequently based on the value of the green color channel.
-      // so we start with that baseNoteInterval, and then change it based on the green channel.
-      // the right shift operations drop the value of the green channel to a max of 4 bits, so a
-      // maximum of (2^4) - 1 = 15. The max() function call is there to add a lower bound. There is a chance
-      // that the bit shift would create a value of 0, and then we'd be multiplying the base interval
-      // by 0, which means constantly retriggering the note (which would result in a silent note because
-      // the ADSR would constantly restart). So we multiply the base interval by a number between 1 and 15,
-      // so the base interval ranges from 64ms to 15*64ms = 960ms.
-      osc0ButtonMode2NoteTimer.set(max(1, OSC_0_BUTTON_2_MODE_TIMER >> 4) * baseNoteInterval);
-      osc0ButtonMode2NoteTimer.start();
-      osc1ButtonMode2NoteTimer.set(max(1, OSC_1_BUTTON_2_MODE_TIMER >> 4) * baseNoteInterval * 2);
-      osc1ButtonMode2NoteTimer.start();
-      osc2ButtonMode2NoteTimer.set(max(1, OSC_2_BUTTON_2_MODE_TIMER >> 4) * baseNoteInterval);
-      osc2ButtonMode2NoteTimer.start();
-    }
+  // -----------------------------------------------------------------------
+  // Mod-index LFO rate — white channel.
+  // -----------------------------------------------------------------------
+  // FM_LFO_CHANNEL >> 3 maps 0-255 to 0-31. Scaled by 0.15 and offset by
+  // 0.05 gives a range of 0.05-4.70 Hz. At the low end you get a slow
+  // tidal breathing of the timbre; at the high end, metallic shimmer
+  // approaching the lower boundary of audible pitch modulation.
+  kModIndex.setFreq(0.05f + (FM_LFO_CHANNEL >> 3) * 0.15f);
 
-    // the base note interval starts at 64, but now it gets modified by the value of the white color channel
-    baseNoteInterval = max(1, (BASE_INTERVAL_CHANNEL >> 5)) * 16; // evaluates to a range between 16 and 7*16 = 112
-
-    // check to see if we're ready to trigger a note for osc0
-    if (osc0ButtonMode2NoteTimer.ready())
-    {
-      // this is a fun way to add some randomness and also modulate the effect of the randomness with a sensor reading.
-      // first we generate a random number between 0 and 255. If that number is less than the current value of the red
-      // color channel sensor reading, then we trigger a new note. So what this means is that the more red light the sensor
-      // sees, the more frequently we'll trigger a note! If there's absolutely no red light (mappedRed == 0), then we'll
-      // never trigger a note because rand(256) will never return a number less than 0. If you want to tune the behavior
-      // of this, change the constraints on the random number. For example, you could change to rand(128), which should
-      // make notes trigger a lot more often. Or move the range up so that only extremely bright red light values trigger
-      // a note by using something like rand(192, 256).
-      if (rand(RANDOMNESS_THRESHOLD + 1) < OSC_0_NOTE_SELECTOR_CHANNEL)
-      {
-        switch (scaleContainer.selected().numNotes)
-        {
-          case 7:
-            osc0Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote7(OSC_0_NOTE_SELECTOR_CHANNEL)) + ((int8_t)rand(-1, 2) * 12);
-            break;
-          case 5:
-            osc0Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote5(OSC_0_NOTE_SELECTOR_CHANNEL)) + ((int8_t)rand(-1, 2) * 12);
-            break;
-          default:
-            break;
-        }
-      }
-      // turn the note on
-      osc0AmpEnv.noteOn();
-      osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
-      osc0.setFreq(osc0Params.frequency);
-      // reset the timer
-      osc0ButtonMode2NoteTimer.set(max(1, OSC_0_BUTTON_2_MODE_TIMER >> 4) * baseNoteInterval);
-      osc0ButtonMode2NoteTimer.start();
-    }
-
-    // now do the same thing for osc1
-    if (osc1ButtonMode2NoteTimer.ready())
-    {
-      if (rand(RANDOMNESS_THRESHOLD + 1) < OSC_1_ARP_TRIGGER_CHANNEL)
-      {
-        switch (scaleContainer.selected().numNotes)
-        {
-          case 7:
-            osc1Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote7(OSC_1_NOTE_SELECTOR_CHANNEL)) + ((int8_t)rand(-1, 2) * 12);
-            break;
-          case 5:
-            osc1Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote5(OSC_1_NOTE_SELECTOR_CHANNEL)) + ((int8_t)rand(-1, 2) * 12);
-            break;
-          default:
-            break;
-        }
-      }
-      osc1AmpEnv.noteOn();
-      osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
-      osc1.setFreq(osc1Params.frequency);
-      osc1ButtonMode2NoteTimer.set(max(1, OSC_1_BUTTON_2_MODE_TIMER >> 4) * baseNoteInterval * 2);
-      osc1ButtonMode2NoteTimer.start();
-    }
-
-    // and do the same for osc2
-    if (osc2ButtonMode2NoteTimer.ready())
-    {
-      if (rand(RANDOMNESS_THRESHOLD + 1) < OSC_2_ARP_TRIGGER_CHANNEL)
-      {
-        switch (scaleContainer.selected().numNotes)
-        {
-          case 7:
-            osc2Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote7(OSC_2_NOTE_SELECTOR_CHANNEL)) + ((int8_t)rand(-1, 2) * 12);
-            break;
-          case 5:
-            osc2Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote5(OSC_2_NOTE_SELECTOR_CHANNEL)) + ((int8_t)rand(-1, 2) * 12);
-            break;
-          default:
-            break;
-        }
-      }
-      osc2AmpEnv.noteOn();
-      osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
-      osc2.setFreq(osc2Params.frequency);
-      osc2ButtonMode2NoteTimer.set(max(1, OSC_2_BUTTON_2_MODE_TIMER >> 4) * baseNoteInterval);
-      osc2ButtonMode2NoteTimer.start();
-    }
-
-    osc0AmpEnv.update();
-    osc1AmpEnv.update();
-    osc2AmpEnv.update();
-    osc0Params.volume = osc0AmpEnv.next();
-    osc1Params.volume = osc1AmpEnv.next();
-    osc2Params.volume = osc2AmpEnv.next();
-  }
-
-  else  // we're not in button 2 mode in this case
-  {
-    // octaveShifter is currently some value between 0 and 3. This moves and constrains it
-    // to be either -1, 0, or 1.
-    // this constrains the amount that the octave can be shifted up or down to either -1, 0, or +1 octaves
-    octaveShifter = max(-1, octaveShifter - 2);
-
-    // this makes it so that there is a minimum amount of time between arpeggios
-    // we'll occasionally trigger an arpeggio if the white light channel is bright enough, but to prevent
-    // that from happening too frequently, we use this timer to prevent a new arpeggio triggering too soon
-    // after the last one.
-    if (arpTimeout.ready())
-    {
-      arpOnTimeOut = false;
-    }
-
-    // this makes sure that arpeggios only get triggered if the octave has been shifted up by 1. I did this
-    // to add some brightness to the sound. Basically the arpeggio triggers if the white light channel is
-    // bright enough, and I wanted the arpeggio sound to mirror that brightness by being shifted up an octave.
-    // if an arpeggio is allowed to start, use a bit of randomness to determine if one actually will start.
-    // the more white light there is, the more likely the arpeggio is.
-    if (octaveShifter > 0 && !arpOnTimeOut && !arpStarted)
-    {
-      arpeggiate = (rand(RANDOMNESS_THRESHOLD + 1) <= GLOBAL_ARP_TRIGGER) ? true : false; // add some randomness so that we don't always trigger an arp
-                                                              // could use something like rand(128) to force more arpeggios
-    }
-
-    // choose which note in the scale we'll be using based on the value of the green channel
-    // create an index to pick a note out of the scale
-    uint8_t i = 0;
-    if (scaleContainer.selected().numNotes == 7)
-    {
-      i = colorToScaleNote7(OSC_0_NOTE_SELECTOR_CHANNEL);   // this is an IntMap
-    }
-    else
-    {
-      i = colorToScaleNote5(OSC_0_NOTE_SELECTOR_CHANNEL);   // IntMap
-    }
-
-    // get the actual note from the scale
-    osc0Params.noteMIDINumber = scaleContainer.selected().getNote(i);
-    // if the note has changed, restart the note playback
-    if (osc0Params.lastNoteMIDINumber != osc0Params.noteMIDINumber)
-    {
-      osc0AmpEnv.noteOn();
-      osc0Params.lastNoteMIDINumber = osc0Params.noteMIDINumber;
-    }
-    // calculate the frequency of the oscillator
-    osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
-    // set the oscillator to the calculated frequency
-    osc0.setFreq((osc0Params.frequency));
-    // update the amp envelope (restarts with a new noteOn() call)
-    osc0AmpEnv.update();
-    osc0Params.volume = osc0AmpEnv.next();
-
-    // 
-    uint8_t j = 0;
-    if (scaleContainer.selected().numNotes == 7)
-    {
-      j = colorToScaleNote7(OSC_1_NOTE_SELECTOR_CHANNEL);
-    }
-    else
-    {
-      j = colorToScaleNote5(OSC_1_NOTE_SELECTOR_CHANNEL);
-    }
-
-    switch (scaleContainer.scaleSelector)
-    {
-    case 0:
-      osc1Params.noteMIDINumber = scaleContainer.selected().getNote((j + 4) % scaleContainer.selected().numNotes) - 12;
-      break;
-    case 1:
-      osc1Params.noteMIDINumber = scaleContainer.selected().getNote((i + 2) % scaleContainer.selected().numNotes) + octaveShifter * 12;
-      break;
-    case 2:
-      osc1Params.noteMIDINumber = scaleContainer.selected().getNote((j)) - 12;
-      break;
-    default:
-      break;
-    }
-
-    if (osc1Params.lastNoteMIDINumber != osc1Params.noteMIDINumber)
-    {
-      osc1AmpEnv.noteOn();
-      osc1Params.lastNoteMIDINumber = osc1Params.noteMIDINumber;
-    }
-    osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
-    osc1.setFreq(osc1Params.frequency);
-    osc1AmpEnv.update();
-    osc1Params.volume = osc1AmpEnv.next();
-
-    if (!arpeggiate)
-    {
-      osc2Params.noteMIDINumber = scaleContainer.selected().getNote((i + 3) % scaleContainer.selected().numNotes) + (octaveShifter * 12);
-      if (osc2Params.lastNoteMIDINumber != osc2Params.noteMIDINumber)
-      {
-        osc2AmpEnv.noteOn();
-        osc2Params.lastNoteMIDINumber = osc2Params.noteMIDINumber;
-      }
-      osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
-      osc2.setFreq(osc2Params.frequency);
-      osc2AmpEnv.update();
-      osc2Params.volume = osc2AmpEnv.next();
-    }
-    else
-    {
-      if (!arpStarted)
-      {
-        numNotesLeftInArp = rand(4, 17);
-        arpStarted = true;
-        arpNoteTimer.set(min(OSC_2_ARP_TRIGGER_CHANNEL, 192));
-        arpNoteTimer.start();
-        arpIndex = rand(scaleContainer.selected().numNotes);
-        osc2AmpEnv.setTimes(5, 5, 100, 100);
-      }
-
-      if (arpNoteTimer.ready())
-      {
-        osc2Params.noteMIDINumber = scaleContainer.selected().getNote(arpIndex) + (12 * (int8_t)rand(-1, 3));
-        osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
-        osc2Params.volume = 120;
-
-        osc2Portamento.setTime(osc2PortTime);
-        if (!USE_PORTAMENTO)
-          osc2.setFreq(osc2Params.frequency);
-
-        int8_t arpShift = rand(-5, 6);
-        arpIndex += arpShift;
-        arpIndex = (arpIndex < scaleContainer.selected().numNotes && arpIndex >= 0)
-            ? arpIndex
-            : ((arpIndex < 0)
-                ? arpIndex += scaleContainer.selected().numNotes
-                : arpIndex -= scaleContainer.selected().numNotes);
-
-        arpNoteTimer.start();
-        numNotesLeftInArp -= 1;
-      }
-
-      if (USE_PORTAMENTO)
-      {
-        osc2Portamento.start(osc2Params.noteMIDINumber);
-        osc2.setFreq_Q16n16(osc2Portamento.next());
-      }
-
-      if (numNotesLeftInArp == 0)
-      {
-        arpeggiate = false;
-        arpStarted = false;
-        arpTimeout.set(mappedGreen << 4);
-        arpTimeout.start();
-        arpOnTimeOut = true;
-        osc2AmpEnv.setTimes(attack, decay, sustain, release);
-      }
-    }
-  }
+  // -----------------------------------------------------------------------
+  // Deviation (modulation depth) — red channel + LFO.
+  // -----------------------------------------------------------------------
+  // In phase-modulation FM synthesis, the deviation controls how far the
+  // carrier phase is pushed on each sample. The relationship to the
+  // classical modulation index β is approximately:
+  //   β ≈ deviation / modulator_frequency
+  // so scaling deviation by mod_hz keeps the timbral character consistent
+  // across pitch changes — a deviation that sounds "medium bright" at A4
+  // will sound equally bright at A5.
+  //
+  // FM_INDEX_CHANNEL >> 2 compresses 0-255 to 0-63, which becomes the
+  // integer modulation index. The full range sweeps from a near-pure sine
+  // (index ~0) through rich harmonics to a dense, aliasing metallic texture
+  // (index ~63). Tune the >> 2 shift to taste: >> 3 halves the maximum
+  // index for a subtler top end; >> 1 doubles it for more aggressive sounds.
+  //
+  // The LFO (kModIndex.next()) returns -128 to 127. Scaled by >> 8, it
+  // applies ±50% sinusoidal variation to the base deviation, so the timbre
+  // breathes at the LFO rate rather than staying static.
+  uint16_t mod_hz_int   = (uint16_t)mod_hz;
+  int32_t baseDeviation = (int32_t)mod_hz_int * (int32_t)(FM_INDEX_CHANNEL >> 2);
+  int8_t  lfo           = kModIndex.next();         // advances the LFO; returns -128 to 127
+  int32_t lfoMod        = (baseDeviation * lfo) >> 8;
+  gDeviation = baseDeviation + lfoMod;
+  if (gDeviation < 0) gDeviation = 0;
 }
