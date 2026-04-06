@@ -11,18 +11,10 @@
 #include <AS5600.h>
 #include <AutoMap.h>
 
-// Look in these files to change software and hardware configurations
 #include <Configuration.h>
 #include <PinAssignments.h>
 
 
-/**
- * @brief Timer for staggering I2C sensor updates.
- *
- * Sensor updates block the processor, interfering with audio generation.
- * Staggering updates across three sensors at I2C_UPDATE_INTERVAL intervals
- * reduces audio glitching while maintaining acceptable sensor responsiveness.
- */
 EventDelay k_i2cUpdateDelay;
 
 
@@ -30,8 +22,6 @@ EventDelay k_i2cUpdateDelay;
 // Arm and Table
 // **********************************************************************************
 
-// ArmManager must be included AFTER <Mozzi.h> because it uses EventDelay,
-// which depends on Mozzi internals. Header-only by design for this reason.
 #include <ArmManager.h>
 #include <TableManager.h>
 
@@ -46,42 +36,21 @@ TableManager table(TABLE_MOTOR_SPEED_PIN, TABLE_MOTOR_DIR_PIN);
 #include <ColorSensor.h>
 ColorSensor colorSensor;
 
-// Color channel data mapped into 0-255 uint8_t control values via AutoMap.
 uint8_t mappedGreen = 0, mappedBlue = 0, mappedRed = 0, mappedWhite = 0;
 
-// Two LEDs on the color sensor PCB can illuminate the viewing area.
 constexpr uint8_t NUM_BRIGHTNESS_LEVELS = 5;
 uint8_t brightnessIterator = 3;
 
-/**
- * @brief Compile-time selection between array-based and bit-manipulation brightness lookup.
- *
- * Set to 1 for the array method (easier modification, minor RAM cost from PROGMEM table).
- * Set to 0 for the bit-manipulation method (zero RAM cost, equivalent functionality).
- * See Footnotes.md section [[#how LED brightness PWM values are calculated]] for derivation.
- */
 #define USE_BRIGHTNESS_ARRAY 1
 
 #if USE_BRIGHTNESS_ARRAY
 const uint8_t PROGMEM LEDBrightnessLevels[NUM_BRIGHTNESS_LEVELS] = {0, 31, 63, 191, 255};
-
-/**
- * @brief Retrieves LED brightness PWM value from PROGMEM lookup table.
- * @param level Brightness level index (0-4). Default is 3.
- * @return PWM duty cycle (0-255).
- */
 inline uint8_t getBrightness(uint8_t level = 3)
 {
     return pgm_read_byte(&LEDBrightnessLevels[level]);
 }
 #else
 constexpr uint16_t LEDBrightnessSequence = 0b1000011000100001;
-
-/**
- * @brief Computes LED brightness PWM value via bit extraction from packed constant.
- * @param level Brightness level index (0-4). Default is 3.
- * @return PWM duty cycle: 0 for level 0, otherwise ((nibble << 5) - 1).
- */
 inline uint8_t getBrightness(uint8_t level = 3)
 {
     return static_cast<uint8_t>(
@@ -92,58 +61,110 @@ inline uint8_t getBrightness(uint8_t level = 3)
 
 
 // **********************************************************************************
+// Wavefolder lookup table
+// **********************************************************************************
+
+/**
+ * @brief Transfer function for the wavefolder, stored in PROGMEM.
+ *
+ * The table encodes one complete period of a triangle wave, making it a
+ * natural representation of a single fold. When the FM output is used to
+ * index into this table, values that would exceed the output range are
+ * "folded back" rather than clipped.
+ *
+ * Layout:
+ *   indices   0–127: linear ramp from -128 to +126 (step +2, no folding)
+ *   indices 128–255: linear ramp from +127 to -127 (step -2, fold region)
+ *
+ * The "no folding" half (0–127) is the baseline: at minimum white, the
+ * drive factor constrains the FM signal to indices 0–125, passing through
+ * the table linearly. As white increases, the signal starts reaching into
+ * the fold region, folding harder with each increment. At the maximum drive
+ * the signal wraps through the table approximately twice, producing a
+ * spectrum with two additional sets of fold-generated harmonics layered
+ * on top of the FM sidebands.
+ *
+ * Indexing is done with a uint8_t, so the table implicitly wraps at 256.
+ * Multiple folds are handled for free by the natural overflow of the
+ * uint8_t index arithmetic — no modulo operation required.
+ *
+ * pgm_read_byte() returns uint8_t; casting to int8_t reinterprets the
+ * two's-complement bit pattern correctly for negative values.
+ */
+const int8_t PROGMEM waveFolder[256] = {
+  -128, -126, -124, -122, -120, -118, -116, -114, -112, -110, -108, -106, -104, -102, -100,  -98,
+   -96,  -94,  -92,  -90,  -88,  -86,  -84,  -82,  -80,  -78,  -76,  -74,  -72,  -70,  -68,  -66,
+   -64,  -62,  -60,  -58,  -56,  -54,  -52,  -50,  -48,  -46,  -44,  -42,  -40,  -38,  -36,  -34,
+   -32,  -30,  -28,  -26,  -24,  -22,  -20,  -18,  -16,  -14,  -12,  -10,   -8,   -6,   -4,   -2,
+     0,    2,    4,    6,    8,   10,   12,   14,   16,   18,   20,   22,   24,   26,   28,   30,
+    32,   34,   36,   38,   40,   42,   44,   46,   48,   50,   52,   54,   56,   58,   60,   62,
+    64,   66,   68,   70,   72,   74,   76,   78,   80,   82,   84,   86,   88,   90,   92,   94,
+    96,   98,  100,  102,  104,  106,  108,  110,  112,  114,  116,  118,  120,  122,  124,  126,
+   127,  125,  123,  121,  119,  117,  115,  113,  111,  109,  107,  105,  103,  101,   99,   97,
+    95,   93,   91,   89,   87,   85,   83,   81,   79,   77,   75,   73,   71,   69,   67,   65,
+    63,   61,   59,   57,   55,   53,   51,   49,   47,   45,   43,   41,   39,   37,   35,   33,
+    31,   29,   27,   25,   23,   21,   19,   17,   15,   13,   11,    9,    7,    5,    3,    1,
+    -1,   -3,   -5,   -7,   -9,  -11,  -13,  -15,  -17,  -19,  -21,  -23,  -25,  -27,  -29,  -31,
+   -33,  -35,  -37,  -39,  -41,  -43,  -45,  -47,  -49,  -51,  -53,  -55,  -57,  -59,  -61,  -63,
+   -65,  -67,  -69,  -71,  -73,  -75,  -77,  -79,  -81,  -83,  -85,  -87,  -89,  -91,  -93,  -95,
+   -97,  -99, -101, -103, -105, -107, -109, -111, -113, -115, -117, -119, -121, -123, -125, -127
+};
+
+
+// **********************************************************************************
 // Music Generation Control
 // **********************************************************************************
 
 #include <MusicTypes.h>
 
-// IntMaps for quantizing a color channel value (0-255) to a scale degree index.
 const IntMap colorToScaleNote7(0, 256, 0, 7);
 const IntMap colorToScaleNote5(0, 256, 0, 5);
 
-// Manages the three buttons below the potentiometers. The buttons are all connected
-// to a single analog input pin, so they need some special sauce to work.
 #include <AnalogButtons.h>
 
-// 255 means no button is pressed. 0, 1, or 2 corresponds to B0, B1, B2 pressed.
 uint8_t buttonPressed = 255;
 
 
 // **********************************************************************************
-// FM Synthesis State
+// FM + Wavefolder State
 // **********************************************************************************
 
 /**
- * Peak phase deviation written by updateFM() at control rate, read by
- * updateAudio() at audio rate. On AVR, int32_t writes are not atomic, so
- * there is a theoretical race condition between the two; in practice a single
- * sample of corruption is inaudible at audio rate and the risk is accepted here
- * as it is throughout the rest of the Mozzi architecture.
+ * Peak phase deviation for the modulator, written at control rate by updateFM()
+ * and consumed at audio rate by updateAudio(). Same atomic-access caveat as the
+ * previous FM version — a single corrupted sample is inaudible.
  */
 int32_t gDeviation = 0;
 
 /**
- * When false (default), the C:M ratio is constrained to integers 1-8,
- * producing tonal, harmonically rich spectra. When true, fractional ratios
- * in the range 1.0-4.0 are used, placing FM sidebands at inharmonic
- * frequencies — bell-like and metallic. Toggled by button B2.
+ * Wavefold drive factor, written at control rate by updateFM() and consumed at
+ * audio rate by updateAudio(). uint8_t is written atomically on AVR, so no
+ * corruption risk for this one.
+ *
+ * Derivation: the FM output (int8_t) is shifted to unsigned (0-255), then
+ * multiplied by gDrive and right-shifted 7 to produce the fold table index.
+ * At gDrive = FOLD_DRIVE_MIN (63), the index stays within 0-125 (the linear
+ * ramp half of the table) — transparent, no folding. At gDrive = 128, the
+ * index traverses the full 256-entry table — one complete fold. At the maximum
+ * of 255, the product (before the shift) reaches ~510, wrapping the uint8_t
+ * index twice — approximately two folds.
+ */
+uint8_t gDrive = FOLD_DRIVE_MIN;
+
+/**
+ * Inharmonic mode: when false (default), C:M ratios are integers {1..8}.
+ * When true, fractional ratios in [1.0, 4.0] produce metallic/bell spectra.
+ * Toggled by button B2.
  */
 bool inharmonicMode = false;
 
-// Function prototype — definition follows loop().
-void updateFM();
+void updateFM(); // forward declaration
 
 
 // **********************************************************************************
 // Setup
 // **********************************************************************************
 
-/**
- * @brief Initializes hardware peripherals, sensors, and Mozzi audio engine.
- *
- * Sequence matters: I2C sensors require initialization before clock speed changes,
- * and arm homing uses delay() which becomes unreliable after PWM frequency modification.
- */
 void setup()
 {
   SERIAL_BEGIN(115200);
@@ -151,28 +172,18 @@ void setup()
 
   Wire.begin();
 
-  // Initialize the table encoder and arm encoder, then home the arm.
-  // home() must be called before Mozzi starts and before PWM clock divisors
-  // are changed, because it uses standard delay(). table.begin() resets the
-  // table encoder to 0 at the current position.
   table.begin();
   arm.begin();
   arm.home();
 
   colorSensor.begin(false);
-
-  // IMPORTANT: Set the I2C clock to 400kHz fast mode AFTER initializing the
-  // connection to the sensors.
   Wire.setClock(400000);
 
   colorSensor.reset();
   colorSensor.enable();
-  // Possible gain settings are 1, 4, 8, 32, 96. Setting the second parameter
-  // to true doubles the diode sensing area.
   colorSensor.setGain(32, false);
-
-  // See the end of CLS16D24.h for a complete table of possible values.
   colorSensor.setResolutionAndConversionTime(0x02);
+
   SERIAL_PRINT("Conversion time: ");
   SERIAL_PRINTLN(colorSensor.getConversionTimeMillis());
   SERIAL_PRINT("Resolution: ");
@@ -184,12 +195,8 @@ void setup()
   colorSensor.setChannelEnabled(ColorChannels::CLEAR, true);
   colorSensor.setChannelEnabled(ColorChannels::IR,    false);
 
-  // Change the PWM frequency on the motor control pins to push it above audible
-  // range. After this line, millis() and delay() are unreliable.
   if (USE_FAST_PWM)
-  {
     setPwmFrequency(5, 1);
-  }
 
   if (USE_LED_PWM)
   {
@@ -201,13 +208,10 @@ void setup()
     digitalWrite(LED_PIN, HIGH);
   }
 
-  // Prime the FM oscillators. The carrier starts on the root note of the first
-  // scale; the modulator starts at a 1:2 ratio (one octave up), which gives a
-  // clean, recognizable starting timbre. The mod-index LFO starts slow.
   float baseHz = mtof(scaleContainer.selected().getNote(0));
   aCarrier.setFreq(baseHz);
   aModulator.setFreq(baseHz * 2.0f);
-  kModIndex.setFreq(0.5f);  // 0.5 Hz; updateFM() will take over from the first cycle
+  kModIndex.setFreq(0.5f);
 
   k_i2cUpdateDelay.set(I2C_UPDATE_INTERVAL);
 
@@ -219,13 +223,6 @@ void setup()
 // updateControl
 // **********************************************************************************
 
-/**
- * @brief Mozzi control-rate callback for sensor polling and state updates.
- *
- * Called at MOZZI_CONTROL_RATE Hz. Handles button debouncing, sensor updates,
- * arm/table positioning, and invokes the FM parameter update. I2C reads are
- * staggered to minimize interference with audio synthesis.
- */
 void updateControl()
 {
   static int8_t targetArmPos = 80;
@@ -237,14 +234,11 @@ void updateControl()
     initialize = false;
   }
 
-  // Auto-ranging maps for the color channels. Static so they persist across
-  // calls and keep tracking the observed min/max.
   static AutoMap autoGreenToUINT8_T(0, colorSensor.getResolution(), 0, 255);
   static AutoMap autoBlueToUINT8_T(0,  colorSensor.getResolution(), 0, 255);
   static AutoMap autoRedToUINT8_T(0,   colorSensor.getResolution(), 0, 255);
   static AutoMap autoWhiteToUINT8_T(0, colorSensor.getResolution(), 0, 255);
 
-  // Check for button presses. Returns 0, 1, 2, or 255 (no press).
   buttonPressed = getButtonPressed(mozziAnalogRead<10>(BUTTONS_PIN));
   if (nextButtonPressAllowed && buttonPressed < 255)
   {
@@ -252,19 +246,19 @@ void updateControl()
     nextButtonPressAllowed = false;
     switch (buttonPressed)
     {
-    case 0: // left button — LED brightness levels
+    case 0:
       brightnessIterator = (brightnessIterator + 1) % NUM_BRIGHTNESS_LEVELS;
       analogWrite(LED_PIN, getBrightness(brightnessIterator));
       break;
 
-    case 1: // middle button — scale selector
+    case 1:
       scaleContainer.nextScale();
       SERIAL_TABS(2);
       SERIAL_PRINT("scale: ");
       SERIAL_PRINTLN(scaleContainer.scaleSelector);
       break;
 
-    case 2: // right button — toggle harmonic / inharmonic C:M ratio mode
+    case 2:
       inharmonicMode = !inharmonicMode;
       break;
 
@@ -274,11 +268,8 @@ void updateControl()
   }
 
   if (!nextButtonPressAllowed && buttonTimer.ready())
-  {
     nextButtonPressAllowed = true;
-  }
 
-  // Update the table's target speed from the pot.
   table.updateTargetSpeed(mozziAnalogRead<10>(POT_B_PIN));
 
   static uint8_t currentSensorToUpdate = 0;
@@ -287,22 +278,19 @@ void updateControl()
   {
     switch (currentSensorToUpdate)
     {
-    case 0: // update the arm encoder
+    case 0:
       arm.updatePosition();
       currentSensorToUpdate++;
       break;
-
-    case 1: // update the table encoder; stop-detection runs inside updateAngle()
+    case 1:
       table.updateAngle();
       currentSensorToUpdate++;
       break;
-
-    case 2: // update the color sensor
+    case 2:
       colorSensor.update();
       colorSensor.printColorData();
       currentSensorToUpdate = 0;
       break;
-
     default:
       currentSensorToUpdate = 0;
       break;
@@ -310,20 +298,16 @@ void updateControl()
     k_i2cUpdateDelay.start();
   }
 
-  // Move the arm to the position requested by the potentiometer.
   targetArmPos = arm.convertPotValToRadius(mozziAnalogRead<10>(POT_A_PIN));
   arm.moveToAngle(arm.radiusToAngle(targetArmPos));
 
-  // Commit the table motor speed.
   table.applySpeed();
 
-  // Map raw color sensor counts into 0-255 control values.
   mappedGreen = autoGreenToUINT8_T(colorSensor.getGreenFixed().asInt());
   mappedBlue  = autoBlueToUINT8_T(colorSensor.getBlueFixed().asInt());
   mappedRed   = autoRedToUINT8_T(colorSensor.getRedFixed().asInt());
   mappedWhite = autoWhiteToUINT8_T(colorSensor.getClearFixed().asInt());
 
-  // Derive FM synthesis parameters from the current color readings.
   updateFM();
 }
 
@@ -333,22 +317,31 @@ void updateControl()
 // **********************************************************************************
 
 /**
- * @brief Mozzi audio-rate callback — the hot path.
+ * @brief Mozzi audio-rate callback.
  *
- * Called at audio rate (~16384 Hz on the ATmega328P). Advances the modulator
- * oscillator, scales its output by the deviation computed in updateFM(), and
- * uses the result as a phase offset for the carrier via Mozzi's phMod().
- * Everything here must be integer arithmetic; no function calls with unknown cost.
+ * Computes one FM sample, then runs it through the wavefolder.
  *
- * The modulation calculation mirrors the classic FM/PM synthesis formula:
- *   output = carrier( θ + β * sin(ωm * t) )
- * where β (modulation index) is encoded in gDeviation and the modulator
- * provides the sin(ωm * t) term.
+ * Folding arithmetic:
+ *   1. fm_out is int8_t (-128 to 127). Adding 128 shifts it to uint8_t (0-255)
+ *      so unsigned multiplication and indexing work correctly.
+ *   2. Multiplying by gDrive (uint8_t) produces a uint16_t result up to 65025.
+ *      Right-shifting 7 brings the maximum to ~508.
+ *   3. Casting to uint8_t discards the high byte, which is equivalent to taking
+ *      the result modulo 256. This wraps the driven signal through the triangle
+ *      table implicitly, handling multiple folds without any branch or division.
+ *   4. pgm_read_byte() returns uint8_t; casting to int8_t reinterprets the
+ *      two's-complement stored value correctly for the negative entries.
  */
 AudioOutput updateAudio()
 {
   int32_t modulation = (gDeviation * aModulator.next()) >> 8;
-  return MonoOutput::from8Bit(aCarrier.phMod(modulation));
+  int8_t  fm_out     = aCarrier.phMod(modulation);
+
+  uint8_t base_index = (uint8_t)((int16_t)fm_out + 128);
+  uint8_t fold_index = (uint8_t)(((uint16_t)base_index * gDrive) >> 7);
+  int8_t  folded     = (int8_t)pgm_read_byte(&waveFolder[fold_index]);
+
+  return MonoOutput::from8Bit(folded);
 }
 
 
@@ -356,9 +349,6 @@ AudioOutput updateAudio()
 // Loop
 // **********************************************************************************
 
-/**
- * @brief Main Arduino loop — delegates entirely to Mozzi's audio hook.
- */
 void loop()
 {
   audioHook();
@@ -370,28 +360,36 @@ void loop()
 // **********************************************************************************
 
 /**
- * @brief Derives FM synthesis parameters from the current color sensor readings.
+ * @brief Derives FM synthesis parameters from color sensor readings.
+ *        Called once per updateControl() cycle (MOZZI_CONTROL_RATE Hz).
  *
- * Called once per updateControl() cycle (MOZZI_CONTROL_RATE Hz). Writes to
- * gDeviation, aCarrier, aModulator, and kModIndex. The channel-to-parameter
- * assignments are defined in Configuration.h; see the comments there for rationale.
+ * Green  → carrier pitch, quantized to the active scale.
  *
- *   Green  → carrier pitch (scale-quantized note selection)
- *   Blue   → C:M ratio (harmonic content / timbre class)
- *   Red    → modulation index (timbral brightness and complexity)
- *   White  → mod-index LFO rate (speed of timbral animation)
+ * Blue   → C:M ratio. Harmonic mode: integer from {1,2,3,4,5,6,7,8}.
+ *           Inharmonic mode: continuous [1.0, 4.0].
  *
- * Button B1 cycles the active scale; pitch stays in-key regardless of which
- * green value is incoming. Button B2 toggles harmonic vs. inharmonic C:M ratios.
+ * Red    → modulation index. gDeviation scales with the modulator frequency so
+ *           that the same red value produces equivalent harmonic density at all
+ *           pitches (a standard technique in FM design to maintain consistent
+ *           timbre across the keyboard range).
+ *
+ * White  → two coupled parameters:
+ *             LFO rate: 0.05 Hz (white=0) to ~4.7 Hz (white=255), animating
+ *             the FM modulation depth so the timbre breathes continuously.
+ *
+ *             Fold drive (gDrive): max(FOLD_DRIVE_MIN, FM_LFO_CHANNEL).
+ *             Below FOLD_DRIVE_MIN the folder is transparent. Above it, drive
+ *             increases linearly with white up to 255 (~2 folds at maximum).
+ *             The coupling means dim scenes are clean and slow-moving; bright
+ *             scenes are both faster-animated and harmonically richer from the
+ *             folding. This feels natural when sweeping the sensor over surfaces
+ *             that vary from dark to bright.
  */
 void updateFM()
 {
   // -----------------------------------------------------------------------
-  // Carrier frequency — green channel selects a scale degree.
+  // Carrier pitch — quantize green to the active scale.
   // -----------------------------------------------------------------------
-  // The same note-selection logic used by the original ambience generator:
-  // map the 0-255 channel value to an index into the current scale, then
-  // convert the MIDI note number to Hz with mtof().
   uint8_t noteIndex = (scaleContainer.selected().numNotes == 7)
       ? colorToScaleNote7(FM_CARRIER_CHANNEL)
       : colorToScaleNote5(FM_CARRIER_CHANNEL);
@@ -401,18 +399,6 @@ void updateFM()
   // -----------------------------------------------------------------------
   // C:M ratio — blue channel.
   // -----------------------------------------------------------------------
-  // In FM synthesis, the ratio between the carrier and modulator frequencies
-  // determines which partials appear in the output spectrum. Integer ratios
-  // produce harmonic spectra (all partials are integer multiples of the
-  // fundamental), while fractional ratios produce inharmonic spectra whose
-  // partials don't align with the harmonic series — the hallmark of bell,
-  // gong, and metallic timbres.
-  //
-  // Harmonic mode: FM_RATIO_CHANNEL >> 5 maps 0-255 to 0-7, indexing into
-  // the table of integer ratios {1,2,3,4,5,6,7,8}.
-  //
-  // Inharmonic mode: FM_RATIO_CHANNEL / 85.0 adds 0.0-3.0 to a base ratio
-  // of 1.0, giving a continuous sweep from 1.0 to ~4.0 with fine resolution.
   float cm_ratio;
   if (!inharmonicMode)
   {
@@ -421,46 +407,29 @@ void updateFM()
   }
   else
   {
-    cm_ratio = 1.0f + (FM_RATIO_CHANNEL / 85.0f);  // ~1.0 to ~4.0
+    cm_ratio = 1.0f + (FM_RATIO_CHANNEL / 85.0f);
   }
 
-  float mod_hz = carrier_hz * cm_ratio;
   aCarrier.setFreq(carrier_hz);
-  aModulator.setFreq(mod_hz);
+  aModulator.setFreq(carrier_hz * cm_ratio);
 
   // -----------------------------------------------------------------------
-  // Mod-index LFO rate — white channel.
+  // LFO rate — white channel.
   // -----------------------------------------------------------------------
-  // FM_LFO_CHANNEL >> 3 maps 0-255 to 0-31. Scaled by 0.15 and offset by
-  // 0.05 gives a range of 0.05-4.70 Hz. At the low end you get a slow
-  // tidal breathing of the timbre; at the high end, metallic shimmer
-  // approaching the lower boundary of audible pitch modulation.
   kModIndex.setFreq(0.05f + (FM_LFO_CHANNEL >> 3) * 0.15f);
 
   // -----------------------------------------------------------------------
-  // Deviation (modulation depth) — red channel + LFO.
+  // Modulation depth — red channel, LFO-modulated.
   // -----------------------------------------------------------------------
-  // In phase-modulation FM synthesis, the deviation controls how far the
-  // carrier phase is pushed on each sample. The relationship to the
-  // classical modulation index β is approximately:
-  //   β ≈ deviation / modulator_frequency
-  // so scaling deviation by mod_hz keeps the timbral character consistent
-  // across pitch changes — a deviation that sounds "medium bright" at A4
-  // will sound equally bright at A5.
-  //
-  // FM_INDEX_CHANNEL >> 2 compresses 0-255 to 0-63, which becomes the
-  // integer modulation index. The full range sweeps from a near-pure sine
-  // (index ~0) through rich harmonics to a dense, aliasing metallic texture
-  // (index ~63). Tune the >> 2 shift to taste: >> 3 halves the maximum
-  // index for a subtler top end; >> 1 doubles it for more aggressive sounds.
-  //
-  // The LFO (kModIndex.next()) returns -128 to 127. Scaled by >> 8, it
-  // applies ±50% sinusoidal variation to the base deviation, so the timbre
-  // breathes at the LFO rate rather than staying static.
-  uint16_t mod_hz_int   = (uint16_t)mod_hz;
+  uint16_t mod_hz_int   = (uint16_t)(carrier_hz * cm_ratio);
   int32_t baseDeviation = (int32_t)mod_hz_int * (int32_t)(FM_INDEX_CHANNEL >> 2);
-  int8_t  lfo           = kModIndex.next();         // advances the LFO; returns -128 to 127
-  int32_t lfoMod        = (baseDeviation * lfo) >> 8;
+  int8_t  lfo           = kModIndex.next();
+  int32_t lfoMod        = (baseDeviation * (int32_t)lfo) >> 8;
   gDeviation = baseDeviation + lfoMod;
   if (gDeviation < 0) gDeviation = 0;
+
+  // -----------------------------------------------------------------------
+  // Fold drive — white channel (coupled to LFO rate).
+  // -----------------------------------------------------------------------
+  gDrive = max((uint8_t)FOLD_DRIVE_MIN, (uint8_t)FM_LFO_CHANNEL);
 }
