@@ -1,3 +1,24 @@
+/**
+ * Color Composer: Pentatonics Hack
+ * 
+ * Very similar to the stock code, but with a few fun differences. First, Button 2 has a different
+ * behavior now. When you press and hold button 2, the system stops updating the notes getting sent
+ * to the oscillators, so as long as you're holding button 2, it will keep playing the same notes.
+ * The moment you release it, it goes back to changing the notes based on color!
+ * 
+ * Honestly, this is barely a hack. Really, this is the same as the stock code, except
+ * that it defaults to a different selection of musical scales to play with. It also removes
+ * the occasional arpeggio that would get triggered when especially bright colors were detected.
+ * I made this to be a bit more of an instrument. The scales that were chosen are all pentatonic,
+ * which means that they basically always sound good. Pentatonic scales lack dissonant notes.
+ * They offer fewer notes than other scales, but they are excellent for jamming.
+ * 
+ * Personally, I think this one is fun to just play with. Disengage the drive wheel for the table
+ * and spin it by hand to particular colors/chords. Move the arm by hand, or gently push it down
+ * or pull it up a bit to give it some vibrato. Press and hold button 2 to sustain notes while you 
+ * spin the table to a new color to select your next chord.
+ */
+
 #include <Arduino.h>
 #include <Crunchlabs_DRV8835.h>
 #include <Wire.h>
@@ -117,17 +138,19 @@ ADSR<MOZZI_CONTROL_RATE, MOZZI_CONTROL_RATE> osc0AmpEnv, osc1AmpEnv, osc2AmpEnv;
 
 // Mozzi EventDelay timers, used instead of millis() for timing
 EventDelay arpNoteTimer, arpTimeout;
-EventDelay osc0ButtonMode2NoteTimer, osc1ButtonMode2NoteTimer, osc2ButtonMode2NoteTimer;
+EventDelay osc0UtilityTimer, osc1UtilityTimer, osc2UtilityTimer;
 
 // IntMaps for squashing scaled color data down to fit a musical scale.
 const IntMap colorToScaleNote7(0, 256, 0, 7);
 const IntMap colorToScaleNote5(0, 256, 0, 5);
 
+const IntMap colorToScaleNotePentatonics3Octave(0, 256, 0, 15);
+
 // Manages the three buttons below the potentiometers. The buttons are all connected to
 // a single analog input pin, so they need some special sauce to work.
 #include <AnalogButtons.h>
 // Variables related to the buttons
-bool enableButton2Mode = false, previousEnableButton2Mode = false;
+bool button2Toggle = false, previousEnableButton2Mode = false;
 uint8_t buttonPressed = 255;    // 255 means no button is pressed. A value of 0, 1, or 2 corresponds to B0, B1, or B2 pressed.
 
 // **********************************************************************************
@@ -143,7 +166,7 @@ Chord currentScale = scaleContainer.selected();
 
 // function prototype for the function that will actually generate sounds from color data
 void ambienceGenerator();
-
+void letsGetChordinated();
 
 // **********************************************************************************
 // Setup
@@ -298,8 +321,7 @@ void updateControl()
       SERIAL_PRINTLN(scaleContainer.scaleSelector);
       break;
 
-    case 2: // right button — toggle button mode 2
-      enableButton2Mode = !enableButton2Mode;
+    case 2: // right button — note hold, now handled in letsGetChordinated()
       break;
 
     default:
@@ -360,9 +382,9 @@ void updateControl()
   mappedWhite = autoWhiteToUINT8_T(colorSensor.getClearFixed().asInt());
 
   // call the function that determines how sound is generated
-  ambienceGenerator();
+  letsGetChordinated();
 
-  previousEnableButton2Mode = enableButton2Mode;
+  previousEnableButton2Mode = button2Toggle;
 }
 
 
@@ -404,340 +426,42 @@ void loop()
 }
 
 
-// **********************************************************************************
-// ambienceGenerator
-// **********************************************************************************
 
-/**
- * @brief Generates musical output from color sensor data and mode state.
- *
- * Two primary modes of operation:
- * - Normal mode: Sustained drones with notes selected from scales based on
- *   color channel values. Occasional arpeggios triggered by white channel intensity.
- * - Button mode 2: Stochastic arpeggiation with probability of note triggers
- *   modulated by color channel values.
- *
- * ADSR envelopes are reconfigured when transitioning between modes.
- */
-void ambienceGenerator()
+
+
+void letsGetChordinated()
 {
-  static int8_t arpIndex = 0;                   // used to select notes in a scale to play as an arpeggio
-  static uint8_t numNotesLeftInArp = 0;         // arpeggios only play for a limited number of notes
-  static bool initialize = true;                // used to initialize some things the first time this function is called
+  static float frozenFreq0 = 0.0f;
+  static float frozenFreq1 = 0.0f;
+  static float frozenFreq2 = 0.0f;
 
-  static uint16_t osc2PortTime = 20;            // portamento value
+  bool noteHeld = (buttonPressed == 2);
 
-  const bool USE_PORTAMENTO = true;
-
-  static uint16_t attack = 100, decay = 500, sustain = 8000, release = 3000;
-
-  // used to move a musical note up or down by an octave. mappedWhite is the 8 bit autoMapped value
-  // of the white light color channel, and the >> 6 operator performs a right shift, where it takes
-  // all 8 bits in a number and literally moves them right, filling in with 0s on the left. This moves
-  // 6 places to the right, so it reduces an 8 bit number to a 2 bit number, which can represent the
-  // numbers 0 through 3. It's basically a way of dividing 256 by 64, but it's a much faster operation.
-  // the microcontroller has hardware purpose-built for performing bit shift operations, and it only
-  // takes a single clock cycle. Division is incredibly slow on this microcontroller, and might need
-  // something like 40 clock cycles.
-  // mappedWhite is 8 bit, this cuts it down to 2 (range 0-3).
-  int8_t octaveShifter = (int8_t)(OCTAVE_SHIFTER_CHANNEL >> 6);
-  static bool arpeggiate = false, arpStarted = false, arpOnTimeOut = true;
-
-  // button2mode is basically arpeggiating each oscillator, instead of holding sustained notes.
-  // baseNoteInterval is the starting point for how much time should elapse between triggering notes
-  // in this mode. This gets modified by the value of the green color channel in button2mode.
-  static uint8_t baseNoteInterval = 64; // baseline amount of time that an arp note will be turned on for, gets modified by sensor readings
-
-  if (!enableButton2Mode && previousEnableButton2Mode)
-    initialize = true; // transition out of button mode 2 requires resetting ADSRs
-
-  // on first call, we need to set some things up
-  if (initialize)
+  if (!noteHeld)
   {
-    osc0AmpEnv.setADLevels(160, 140);
-    osc1AmpEnv.setADLevels(60, 50);
-    osc2AmpEnv.setADLevels(120, 110);
-    osc0AmpEnv.setTimes(attack, decay, sustain, release);
-    osc1AmpEnv.setTimes(attack, decay, sustain, release);
-    osc2AmpEnv.setTimes(attack, decay, sustain, release);
-    initialize = false;
-  }
+    uint8_t index;
 
-  // button2mode is basically arpeggiating each oscillator, instead of holding sustained notes
-  if (enableButton2Mode)
-  {
-    // if we weren't already in button2Mode, we need to set some things up first
-    if (!previousEnableButton2Mode)
-    {
-      // change the ADSR to make the notes sound plucky
-      osc0AmpEnv.setTimes(5, 50, 100, 200);
-      osc1AmpEnv.setTimes(5, 50, 100, 200);
-      osc1AmpEnv.setADLevels(60, 40);
-      osc2AmpEnv.setTimes(5, 50, 100, 200);
-
-      // start the timer objects that will determine how often we should play a note
-      // notes are triggered more or less frequently based on the value of the green color channel.
-      // so we start with that baseNoteInterval, and then change it based on the green channel.
-      // the right shift operations drop the value of the green channel to a max of 4 bits, so a
-      // maximum of (2^4) - 1 = 15. The max() function call is there to add a lower bound. There is a chance
-      // that the bit shift would create a value of 0, and then we'd be multiplying the base interval
-      // by 0, which means constantly retriggering the note (which would result in a silent note because
-      // the ADSR would constantly restart). So we multiply the base interval by a number between 1 and 15,
-      // so the base interval ranges from 64ms to 15*64ms = 960ms.
-      osc0ButtonMode2NoteTimer.set(max(1, OSC_0_BUTTON_2_MODE_TIMER >> 4) * baseNoteInterval);
-      osc0ButtonMode2NoteTimer.start();
-      osc1ButtonMode2NoteTimer.set(max(1, OSC_1_BUTTON_2_MODE_TIMER >> 4) * baseNoteInterval * 2);
-      osc1ButtonMode2NoteTimer.start();
-      osc2ButtonMode2NoteTimer.set(max(1, OSC_2_BUTTON_2_MODE_TIMER >> 4) * baseNoteInterval);
-      osc2ButtonMode2NoteTimer.start();
-    }
-
-    // the base note interval starts at 64, but now it gets modified by the value of the white color channel
-    baseNoteInterval = max(1, (BASE_INTERVAL_CHANNEL >> 5)) * 16; // evaluates to a range between 16 and 7*16 = 112
-
-    // check to see if we're ready to trigger a note for osc0
-    if (osc0ButtonMode2NoteTimer.ready())
-    {
-      // this is a fun way to add some randomness and also modulate the effect of the randomness with a sensor reading.
-      // first we generate a random number between 0 and 255. If that number is less than the current value of the red
-      // color channel sensor reading, then we trigger a new note. So what this means is that the more red light the sensor
-      // sees, the more frequently we'll trigger a note! If there's absolutely no red light (mappedRed == 0), then we'll
-      // never trigger a note because rand(256) will never return a number less than 0. If you want to tune the behavior
-      // of this, change the constraints on the random number. For example, you could change to rand(128), which should
-      // make notes trigger a lot more often. Or move the range up so that only extremely bright red light values trigger
-      // a note by using something like rand(192, 256).
-      if (rand(RANDOMNESS_THRESHOLD + 1) < OSC_0_NOTE_SELECTOR_CHANNEL)
-      {
-        switch (scaleContainer.selected().numNotes)
-        {
-          case 7:
-            osc0Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote7(OSC_0_NOTE_SELECTOR_CHANNEL)) + ((int8_t)rand(-1, 2) * 12);
-            break;
-          case 5:
-            osc0Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote5(OSC_0_NOTE_SELECTOR_CHANNEL)) + ((int8_t)rand(-1, 2) * 12);
-            break;
-          default:
-            break;
-        }
-      }
-      // turn the note on
-      osc0AmpEnv.noteOn();
-      osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
-      osc0.setFreq(osc0Params.frequency);
-      // reset the timer
-      osc0ButtonMode2NoteTimer.set(max(1, OSC_0_BUTTON_2_MODE_TIMER >> 4) * baseNoteInterval);
-      osc0ButtonMode2NoteTimer.start();
-    }
-
-    // now do the same thing for osc1
-    if (osc1ButtonMode2NoteTimer.ready())
-    {
-      if (rand(RANDOMNESS_THRESHOLD + 1) < OSC_1_ARP_TRIGGER_CHANNEL)
-      {
-        switch (scaleContainer.selected().numNotes)
-        {
-          case 7:
-            osc1Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote7(OSC_1_NOTE_SELECTOR_CHANNEL)) + ((int8_t)rand(-1, 2) * 12);
-            break;
-          case 5:
-            osc1Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote5(OSC_1_NOTE_SELECTOR_CHANNEL)) + ((int8_t)rand(-1, 2) * 12);
-            break;
-          default:
-            break;
-        }
-      }
-      osc1AmpEnv.noteOn();
-      osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
-      osc1.setFreq(osc1Params.frequency);
-      osc1ButtonMode2NoteTimer.set(max(1, OSC_1_BUTTON_2_MODE_TIMER >> 4) * baseNoteInterval * 2);
-      osc1ButtonMode2NoteTimer.start();
-    }
-
-    // and do the same for osc2
-    if (osc2ButtonMode2NoteTimer.ready())
-    {
-      if (rand(RANDOMNESS_THRESHOLD + 1) < OSC_2_ARP_TRIGGER_CHANNEL)
-      {
-        switch (scaleContainer.selected().numNotes)
-        {
-          case 7:
-            osc2Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote7(OSC_2_NOTE_SELECTOR_CHANNEL)) + ((int8_t)rand(-1, 2) * 12);
-            break;
-          case 5:
-            osc2Params.noteMIDINumber = scaleContainer.selected().getNote(colorToScaleNote5(OSC_2_NOTE_SELECTOR_CHANNEL)) + ((int8_t)rand(-1, 2) * 12);
-            break;
-          default:
-            break;
-        }
-      }
-      osc2AmpEnv.noteOn();
-      osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
-      osc2.setFreq(osc2Params.frequency);
-      osc2ButtonMode2NoteTimer.set(max(1, OSC_2_BUTTON_2_MODE_TIMER >> 4) * baseNoteInterval);
-      osc2ButtonMode2NoteTimer.start();
-    }
-
-    osc0AmpEnv.update();
-    osc1AmpEnv.update();
-    osc2AmpEnv.update();
-    osc0Params.volume = osc0AmpEnv.next();
-    osc1Params.volume = osc1AmpEnv.next();
-    osc2Params.volume = osc2AmpEnv.next();
-  }
-
-  else  // we're not in button 2 mode in this case
-  {
-    // octaveShifter is currently some value between 0 and 3. This moves and constrains it
-    // to be either -1, 0, or 1.
-    // this constrains the amount that the octave can be shifted up or down to either -1, 0, or +1 octaves
-    octaveShifter = max(-1, octaveShifter - 2);
-
-    // this makes it so that there is a minimum amount of time between arpeggios
-    // we'll occasionally trigger an arpeggio if the white light channel is bright enough, but to prevent
-    // that from happening too frequently, we use this timer to prevent a new arpeggio triggering too soon
-    // after the last one.
-    if (arpTimeout.ready())
-    {
-      arpOnTimeOut = false;
-    }
-
-    // this makes sure that arpeggios only get triggered if the octave has been shifted up by 1. I did this
-    // to add some brightness to the sound. Basically the arpeggio triggers if the white light channel is
-    // bright enough, and I wanted the arpeggio sound to mirror that brightness by being shifted up an octave.
-    // if an arpeggio is allowed to start, use a bit of randomness to determine if one actually will start.
-    // the more white light there is, the more likely the arpeggio is.
-    if (octaveShifter > 0 && !arpOnTimeOut && !arpStarted)
-    {
-      arpeggiate = (rand(RANDOMNESS_THRESHOLD + 1) <= GLOBAL_ARP_TRIGGER) ? true : false; // add some randomness so that we don't always trigger an arp
-                                                              // could use something like rand(128) to force more arpeggios
-    }
-
-    // choose which note in the scale we'll be using based on the value of the green channel
-    // create an index to pick a note out of the scale
-    uint8_t i = 0;
-    if (scaleContainer.selected().numNotes == 7)
-    {
-      i = colorToScaleNote7(OSC_0_NOTE_SELECTOR_CHANNEL);   // this is an IntMap
-    }
-    else
-    {
-      i = colorToScaleNote5(OSC_0_NOTE_SELECTOR_CHANNEL);   // IntMap
-    }
-
-    // get the actual note from the scale
-    osc0Params.noteMIDINumber = scaleContainer.selected().getNote(i);
-    // if the note has changed, restart the note playback
-    if (osc0Params.lastNoteMIDINumber != osc0Params.noteMIDINumber)
-    {
-      osc0AmpEnv.noteOn();
-      osc0Params.lastNoteMIDINumber = osc0Params.noteMIDINumber;
-    }
-    // calculate the frequency of the oscillator
+    index = colorToScaleNotePentatonics3Octave(mappedGreen);
+    osc0Params.noteMIDINumber = scaleContainer.selected().getNote(index);
     osc0Params.frequency = mtof(osc0Params.noteMIDINumber);
-    // set the oscillator to the calculated frequency
-    osc0.setFreq((osc0Params.frequency));
-    // update the amp envelope (restarts with a new noteOn() call)
-    osc0AmpEnv.update();
-    osc0Params.volume = osc0AmpEnv.next();
+    osc0.setFreq(osc0Params.frequency);
+    frozenFreq0 = osc0Params.frequency;
 
-    // 
-    uint8_t j = 0;
-    if (scaleContainer.selected().numNotes == 7)
-    {
-      j = colorToScaleNote7(OSC_1_NOTE_SELECTOR_CHANNEL);
-    }
-    else
-    {
-      j = colorToScaleNote5(OSC_1_NOTE_SELECTOR_CHANNEL);
-    }
-
-    switch (scaleContainer.scaleSelector)
-    {
-    case 0:
-      osc1Params.noteMIDINumber = scaleContainer.selected().getNote((j + 4) % scaleContainer.selected().numNotes) - 12;
-      break;
-    case 1:
-      osc1Params.noteMIDINumber = scaleContainer.selected().getNote((i + 2) % scaleContainer.selected().numNotes) + octaveShifter * 12;
-      break;
-    case 2:
-      osc1Params.noteMIDINumber = scaleContainer.selected().getNote((j)) - 12;
-      break;
-    default:
-      break;
-    }
-
-    if (osc1Params.lastNoteMIDINumber != osc1Params.noteMIDINumber)
-    {
-      osc1AmpEnv.noteOn();
-      osc1Params.lastNoteMIDINumber = osc1Params.noteMIDINumber;
-    }
-    osc1Params.frequency = mtof(osc1Params.noteMIDINumber);
+    index = colorToScaleNotePentatonics3Octave(mappedRed);
+    osc1Params.noteMIDINumber = scaleContainer.selected().getNote(index);
+    osc1Params.frequency = mtof(osc1Params.noteMIDINumber - 12);
     osc1.setFreq(osc1Params.frequency);
-    osc1AmpEnv.update();
-    osc1Params.volume = osc1AmpEnv.next();
+    frozenFreq1 = osc1Params.frequency;
 
-    if (!arpeggiate)
-    {
-      osc2Params.noteMIDINumber = scaleContainer.selected().getNote((i + 3) % scaleContainer.selected().numNotes) + (octaveShifter * 12);
-      if (osc2Params.lastNoteMIDINumber != osc2Params.noteMIDINumber)
-      {
-        osc2AmpEnv.noteOn();
-        osc2Params.lastNoteMIDINumber = osc2Params.noteMIDINumber;
-      }
-      osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
-      osc2.setFreq(osc2Params.frequency);
-      osc2AmpEnv.update();
-      osc2Params.volume = osc2AmpEnv.next();
-    }
-    else
-    {
-      if (!arpStarted)
-      {
-        numNotesLeftInArp = rand(4, 17);
-        arpStarted = true;
-        arpNoteTimer.set(min(OSC_2_ARP_TRIGGER_CHANNEL, 192));
-        arpNoteTimer.start();
-        arpIndex = rand(scaleContainer.selected().numNotes);
-        osc2AmpEnv.setTimes(5, 5, 100, 100);
-      }
-
-      if (arpNoteTimer.ready())
-      {
-        osc2Params.noteMIDINumber = scaleContainer.selected().getNote(arpIndex) + (12 * (int8_t)rand(-1, 3));
-        osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
-        osc2Params.volume = 120;
-
-        osc2Portamento.setTime(osc2PortTime);
-        if (!USE_PORTAMENTO)
-          osc2.setFreq(osc2Params.frequency);
-
-        int8_t arpShift = rand(-5, 6);
-        arpIndex += arpShift;
-        arpIndex = (arpIndex < scaleContainer.selected().numNotes && arpIndex >= 0)
-            ? arpIndex
-            : ((arpIndex < 0)
-                ? arpIndex += scaleContainer.selected().numNotes
-                : arpIndex -= scaleContainer.selected().numNotes);
-
-        arpNoteTimer.start();
-        numNotesLeftInArp -= 1;
-      }
-
-      if (USE_PORTAMENTO)
-      {
-        osc2Portamento.start(osc2Params.noteMIDINumber);
-        osc2.setFreq_Q16n16(osc2Portamento.next());
-      }
-
-      if (numNotesLeftInArp == 0)
-      {
-        arpeggiate = false;
-        arpStarted = false;
-        arpTimeout.set(mappedGreen << 4);
-        arpTimeout.start();
-        arpOnTimeOut = true;
-        osc2AmpEnv.setTimes(attack, decay, sustain, release);
-      }
-    }
+    index = colorToScaleNotePentatonics3Octave(mappedBlue);
+    osc2Params.noteMIDINumber = scaleContainer.selected().getNote(index);
+    osc2Params.frequency = mtof(osc2Params.noteMIDINumber);
+    osc2.setFreq(osc2Params.frequency);
+    frozenFreq2 = osc2Params.frequency;
   }
+  // When held, setFreq is not called — oscillators keep playing frozenFreq* unchanged.
+
+  osc0Params.volume = 180;
+  osc1Params.volume = 150;
+  osc2Params.volume = 210;
 }
