@@ -59,8 +59,8 @@ ScaleStorage scaleContainer =
 {
   {
     &scale_EbPentatonicMinor,   // options: any scale defined in MusicalScales.h
-    &scale_CLydian,
-    &scale_CPentatonicMajor
+    &scale_CLydian,             // options: any scale defined in MusicalScales.h
+    &scale_CPentatonicMajor     // options: any scale defined in MusicalScales.h
   },
   0  // index of the initially selected scale
 };
@@ -91,9 +91,9 @@ ScaleStorage scaleContainer =
 //           Slow white → leisurely timbral breathing (~0.05 Hz).
 //           Fast white → rapid shimmer approaching vibrato character (~3.9 Hz).
 
-#define FM_CARRIER_CHANNEL    mappedGreen
-#define FM_RATIO_CHANNEL      mappedBlue
-#define FM_INDEX_CHANNEL      mappedRed
-#define FM_LFO_CHANNEL        mappedWhite
+#define FM_CARRIER_CHANNEL    mappedGreen     // options: mappedWhite, mappedRed, mappedGreen, mappedBlue (default mappedGreen)
+#define FM_RATIO_CHANNEL      mappedBlue      // options: mappedWhite, mappedRed, mappedGreen, mappedBlue (default mappedBlue)
+#define FM_INDEX_CHANNEL      mappedRed       // options: mappedWhite, mappedRed, mappedGreen, mappedBlue (default mappedRed)
+#define FM_LFO_CHANNEL        mappedWhite     // options: mappedWhite, mappedRed, mappedGreen, mappedBlue (default mappedWhite)
 
 #endif // CONFIGURATION_H

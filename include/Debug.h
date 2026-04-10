@@ -26,7 +26,7 @@
 
 // #define USE_SERIAL
 
-#ifdef USE_SERIAL
+#if USE_SERIAL
   #define SERIAL_PRINT(x) Serial.print(x)
   #define SERIAL_PRINTLN(x) Serial.println(x)
   #define SERIAL_BEGIN(baud) Serial.begin(baud)

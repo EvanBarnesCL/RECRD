@@ -1,3 +1,14 @@
+/**
+ * Color Composer: Spectral FM Hack.
+ * This hack uses the color data channels to drive the parameters of a frequency modulation (FM)
+ * synthesis engine. FM synthesis uses oscillators and both carriers and modulators, where the
+ * modulator is used to change the frequency of the carrier. This is a really powerful synthesis
+ * technique that can sound incredible or terrible, depending on how you set it up. This version
+ * uses a single carrier oscillator being modulated by one modulator oscillator. Be sure to give
+ * the table at least one full revolution to let the autoranging filters adjust. Until that happens,
+ * this might sound kind of awful.
+ */
+
 #include <Arduino.h>
 #include <Crunchlabs_DRV8835.h>
 #include <Wire.h>
